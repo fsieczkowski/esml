@@ -1,0 +1,8 @@
+Group is
+	$SMACKAGE/cmlib/v1/cmlib.cm
+	$SMACKAGE/parcom/v1/parcom.cm
+        util.sml
+	ast.sml
+        parse.sml
+        tchck.sml
+        top.sml

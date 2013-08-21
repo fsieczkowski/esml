@@ -1,0 +1,25 @@
+
+datatype Option : * -> * =  None : [a] Option a | Some : [a] a -> Option a
+(* Both curried and uncurried arguments possible; here, curried, since no
+ * pattern matching for pairs implemented, only projections *)
+datatype List : * -> * = Nil : [a] List a | Cons : [a] a -> List a -> List a
+
+(* Polymorphic functions require full annotations, for now at least.
+ * It could be made more implicit, kind of like in Coq. *)
+fun hd [A] (xs : List A) : Option A =
+    case xs of
+        Nil => None
+      (* Underscore patterns also not implemented, what a surprise *)
+      | Cons x xs => Some x
+    end
+
+fun tl [A] (xs : List A) : Option A =
+    case xs of
+        Nil => None
+      | Cons x xs => #{ This is a hole, text inside is treated as a comment }
+    end
+
+(* Monomorphic functions do not need type annotations *)
+fun factorial n =
+    (* Infix operators are not treated at all, for the time being *)
+    if = (n, 0) then 1 else * (factorial #{ }, n)

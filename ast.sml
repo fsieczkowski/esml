@@ -2,16 +2,20 @@
 structure DTFunctors =
 struct
 
+  datatype kind = KTyp | KArr of kind * kind
+  datatype bdesc = Ctor | BVar
+
   datatype ('tvar, 'typ) typF
     = TyArr  of 'typ * 'typ
     | TyProd of 'typ * 'typ
+    | TyApp  of 'typ * 'typ
     | TyInt | TyBool
     | TyVar  of 'tvar
 
   datatype btinop = Add | Sub | Mul | Div | Mod | Neg | Eq | Lt | Gt
                   | LEq | GEq | Not | And | Or
 
-  datatype ('var, 'arg, 'dec, 'term, 'ann) termF
+  datatype ('var, 'arg, 'alt, 'dec, 'term, 'ann) termF
     = Var of 'var * 'ann
     | Abs of 'arg * 'term * 'ann
     | App of 'term * 'term * 'ann
@@ -23,9 +27,12 @@ struct
     | Op of btinop * 'ann
     | Let of 'dec list * 'term * 'ann
     | If of 'term * 'term * 'term * 'ann
-  datatype ('var, 'arg, 'tvar, 'typ, 'term, 'ann) decF
-    = Fun of ('var * 'arg list * 'term * 'ann) list
-    | PFun of ('var * 'tvar list * ('var * 'typ) list * 'typ * 'term * 'ann) list
+    | Case of 'term * 'alt list * 'ann
+  datatype ('var, 'arg, 'tvar, 'typ, 'term, 'eann, 'tann) decF
+    = Fun of ('var * 'arg list * 'term * 'eann) list
+    | PFun of ('var * 'tvar list * ('var * 'typ) list * 'typ * 'term * 'eann) list
+    | Data of ('tvar * kind * ('var * 'tvar list * 'typ) list * 'tann) list
+(*    | Type of ('tvar * 'typ * 'tann)*)
 
   fun annE (Var (x, a)) = a
     | annE (Abs (arg, e, a)) = a
@@ -38,17 +45,30 @@ struct
     | annE (Op (bop, a)) = a
     | annE (Let (ds, e, a)) = a
     | annE (If (e1, e2, e3, a)) = a
+    | annE (Case (e, alts, a)) = a
 
   local fun parens s = "(" ^ s ^ ")"
   in
+
+  fun ppknd k =
+      let fun aux KTyp = "*"
+            | aux (KArr (k1, k2)) = "(" ^ aux k1 ^ " -> " ^ ppknd k2 ^ ")"
+      in case k of
+             KTyp => "*"
+           | KArr (k1, k2) => aux k1 ^ " -> " ^ ppknd k2
+      end
 
   fun ppty f g n (TyArr  (t1, t2)) =
       let val r = f 2 t1 ^ " -> " ^ f 1 t2
       in if n > 1 then parens r else r
       end
     | ppty f g n (TyProd (t1, t2)) =
-      let val r = f 2 t1 ^ " * " ^ f 3 t2
+      let val r = f 2 t1 ^ " * " ^ f 2 t2
       in if n > 2 then parens r else r
+      end
+    | ppty f g n (TyApp  (t1, t2)) =
+      let val r = f 3 t1 ^ " " ^ f 3 t2
+      in if n > 3 then parens r else r
       end
     | ppty f g n TyInt  = "int"
     | ppty f g n TyBool = "bool"
@@ -68,10 +88,15 @@ struct
   type var = string
   type pos = Pos.pos
 
+  type pPat = var * var list
+
   (* FIXME: once stuff typechecks, uncomment the optional typing of arguments *)
-  datatype pTerm = PT of (var, var (* * pTyp option *), pDec, pTerm, pos) termF
+  datatype pTerm = PT of (var, var (* * pTyp option *), pAlt, pDec, pTerm, pos) termF
                  | PHole of pos | PAnn of pTerm * pTyp * pos
-       and pDec  = PD of (var, var (* * pTyp option *), string, pTyp, pTerm, pos) decF
+       and pDec  = PD of (var, var (* * pTyp option *), string, pTyp, pTerm, pos, pos) decF
+                                                                                       
+  withtype pAlt = pPat * pTerm
+
 
   end
 
@@ -92,24 +117,37 @@ struct
   type tname = string
 
   datatype cgTyp = CTyUVar of int | CTyp of (tvar, cgTyp) typF
-  datatype cgTyS = CSPoly of (tname * tvar) list * cgTyp | CSMono of cgTyp
-  type cgContext  = (var * cgTyS) list
-  type cgTContext = (tname * tvar) list
+  datatype cgTyS = CSPoly of (tname * (tvar * kind)) list * cgTyp | CSMono of cgTyp
+  type cgContext  = (var * (cgTyS * bdesc)) list
+  type cgTContext = (tname * (tvar * kind)) list
+  type cgEnv     = {ty : cgTContext, var : cgContext}
 
-  datatype cgTerm = CTerm of (var, var * cgTyp, cgDec, cgTerm, pos * cgTyp) termF
-                  | CHole of pos * cgTContext * cgContext * cgTyp
-       and cgDec  = CDec  of (var, var * cgTyp, tname * tvar, cgTyp, cgTerm, pos * cgTyS) decF
+  fun mkEnv    (D, G)           = {ty = D,       var = G}
+  fun updTy    (env : cgEnv, D) = {ty = D,       var = #var env}
+  fun updVar   (env : cgEnv, G) = {ty = #ty env, var = G}
+
+  type cgPat  = var * (var * cgTyS) list
+
+  datatype cgTerm = CTerm of (var, var * cgTyp, cgAlt, cgDec, cgTerm, pos * cgTyp) termF
+                  | CHole of pos * cgEnv * cgTyp
+       and cgDec  = CDec  of (var, var * cgTyp, tname * (tvar * kind), cgTyp, cgTerm, pos * cgTyS, pos) decF
+  withtype cgAlt  = cgPat * cgTerm
+
 
   datatype constr = CEqc of cgTyp * cgTyp * pos
 
   fun ppuvar n = "?X" ^ Int.toString n
-  fun ppty ty =
-      let fun pptyvar n = "?V" ^ Int.toString n
+  fun ppty D ty =
+      let fun pptyvar n = (case List.find (fn (_, (tv, _)) => n = tv) D of
+                               SOME (s, _) => s
+                             | NONE => "?V" ^ Int.toString n)
           fun aux _ (CTyUVar n) = ppuvar n
             | aux n (CTyp t) = DTFunctors.ppty aux pptyvar n t
       in aux 1 ty
       end
   end
+
+  fun ppconstr (CEqc (t1, t2, pos)) = ppty [] t1 ^ " ~ " ^ ppty [] t2 ^ " @ " ^ Pos.toString pos ^ "\n"
 
 end
 
@@ -124,23 +162,27 @@ struct
   type pos = Pos.pos
 
   datatype typ = TyF of (tvar, typ) typF | TyMono of tvar
-  datatype tyS = SPoly of (tvar * tname) list * typ | SMono of typ
-  type tycontext = (tvar * tname) list
-  type context   = (var * tyS) list
+  datatype tyS = SPoly of (tvar * (tname * kind)) list * typ | SMono of typ
+  type tycontext = (tvar * (tname * kind)) list
+  type context   = (var * (tyS * bdesc)) list
+  type env       = tycontext * context
 
-  datatype hole = Open of tycontext * context * typ | Closed of term
-       and term = TmF of (var, var * typ, dec, term, pos * typ) termF
-                | THole of pos * hole ref
-       and dec  = DF of (var, var * typ, tvar * tname, typ, term,  pos * tyS) decF
+  type pattern  = var * (var * tyS) list
+
+  datatype hole = Open of pos * (tycontext * context * typ) * (CGAst.cgEnv * CGAst.cgTyp) | Closed of term
+       and term = TmF of (var, var * typ, alt, dec, term, pos * typ) termF
+                | THole of hole ref
+       and dec  = DF of (var, var * typ, tvar * (tname * kind), typ, term,  pos * tyS, pos) decF
+  withtype alt  = pattern * term
 
   fun annE (TmF t) = DTFunctors.annE t
-    | annE (THole (p, hr)) = (case !hr of
-                                  Open h => (p, #3 h)
-                                | Closed t => annE t)
+    | annE (THole hr) = (case !hr of
+                             Open (pos, nty, _) => (pos, #3 nty)
+                           | Closed t => annE t)
 
   fun ppty (D, ty) =
       let fun pptyvar n = (case Util.lookup (D, n) of
-                               SOME s => s
+                               SOME (s, _) => s
                              | NONE => "?V" ^ Int.toString n)
           fun aux _ (TyMono n) = "_t" ^ Int.toString n
             | aux n (TyF t) = DTFunctors.ppty aux pptyvar n t
@@ -150,9 +192,9 @@ struct
   fun pptys (D, SMono t) = ppty (D, t)
     | pptys (D, SPoly (s, t)) =
       let val ctx = s @ D
-          val tc = "[" ^ String.concatWith " " (map #2 s) ^ "] "
+          val tc = "[" ^ String.concatWith " " (map (#1 o #2) s) ^ "] "
           fun pptyvar n = (case Util.lookup (ctx, n) of
-                               SOME s => s
+                               SOME (s, _) => s
                              | NONE => "?V" ^ Int.toString n)
           fun aux _ (TyMono n) = "_t" ^ Int.toString n
             | aux n (TyF t) = DTFunctors.ppty aux pptyvar n t

@@ -1,7 +1,7 @@
 structure Reserved :> MINI_LANGUAGE_DEF =
 struct
 
-  val reservedNames = ["val", "fun", "type", "rec", "let", "in", "end", "fn",
+  val reservedNames = ["val", "fun", "type", "rec", "let", "in", "end", "fn", "and",
                        "signature", "sig", "structure", "struct", "datatype",
                        "case", "of", "int", "bool", "if", "then", "else", "fst", "snd"]
   val reservedOpNames = ["=>", ":", "=", "->", "|", "*", "#"]
@@ -27,10 +27,17 @@ struct
   fun notIn lst x = List.all (fn y => y <> x) lst
 
   local
+      fun flat3' ((x, y), z) = (x, y, z)
+      fun flat4' ((x, y, z), t) = (x, y, z, t)
+      fun flat5' ((w, x, y, z), t) = (w, x, y, z, t)
+      fun flat6' ((u, w, x, y, z), t) = (u, w, x, y, z, t)
+      fun mergePos (t1, t2) = (t1, t2, Pos.union (annE t1) (annE t2))
+
       structure F = DTFunctors
       val Var   = PT o F.Var
       val Abs   = PT o F.Abs
       val App   = PT o F.App
+      val Case  = PT o F.Case
       val Pair  = PT o F.Pair
       val Proj1 = PT o F.Proj1
       val Proj2 = PT o F.Proj2
@@ -41,11 +48,16 @@ struct
       val If    = PT o F.If
       val Fun   = PD o F.Fun
       val PFun  = PD o F.PFun
+      val Data  = PD o F.Data
       val TArr  = PTyp o F.TyArr
       val TProd = PTyp o F.TyProd
+      val TApp  = PTyp o F.TyApp
       val TInt  = PTyp F.TyInt
       val TBool = PTyp F.TyBool
       val TVar  = PTyp o F.TyVar
+
+      val KTyp  = F.KTyp
+      val KArr  = F.KArr
 
       val idops = [("div", F.Div), ("mod", F.Mod), ("not", F.Not), ("andalso", F.And), ("orelse", F.Or)]
       val opops = [("+", F.Add), ("-", F.Sub), ("*", F.Mul), ("~", F.Neg), ("=", F.Eq), ("<", F.Lt),
@@ -54,29 +66,25 @@ struct
 
       val resids = List.map #1 idvals @ List.map #1 idops @ LD.reservedNames
       val resops = List.map #1 opops  @ LD.reservedOpNames
-
-      fun flat3' ((x, y), z) = (x, y, z)
-      fun flat4' ((x, y, z), t) = (x, y, z, t)
-      fun flat5' ((w, x, y, z), t) = (w, x, y, z, t)
-      fun flat6' ((u, w, x, y, z), t) = (u, w, x, y, z, t)
-      fun mergePos (t1, t2) = (t1, t2, Pos.union (annE t1) (annE t2))
   in
       open TP
 
+
+  val ident = try (identifier suchthat (notIn resids))
+  val opid  = try (operator suchthat (notIn resops))
+
   (* types *)
-  val tyVar = identifier suchthat (notIn resids) wth TVar
+  val tyVar = ident wth TVar
 
   fun tyArr  () = chainr1 ($tyProd) (reservedOp "->" return TArr)
-  and tyProd () = chainl1 ($tyAt)   (reservedOp "*"  return TProd)
+  and tyProd () = chainl1 ($tyApp)  (reservedOp "*"  return TProd)
+  and tyApp  () = chainl1 ($tyAt)   (succeed TApp)
   and tyAt   () = tyVar <|> reserved "int" return TInt
                         <|> reserved "bool" return TBool
                         <|> parens  ($tyArr)
   val parseTyp = $tyArr
 
   val tyann = reservedOp ":" >> parseTyp
-
-  val ident = try (identifier suchthat (notIn resids))
-  val opid  = try (operator suchthat (notIn resops))
 
   val idop  = !! (identifier when (fn s => Util.lookup (idops, s))) wth Op
   val idval = !! (identifier when (fn s => Util.lookup (idvals, s))) wth BoolL
@@ -110,6 +118,20 @@ struct
 
   val hole = !! (char #"#" >> braces (repeat (noneOf [#"}"]))) wth PHole o #2
 
+  fun atKnd () = reservedOp "*" return KTyp <|> parens ($arKnd)
+  and arKnd () = chainl1 ($atKnd) (reservedOp "->" return KArr)
+
+  val kindAnn = reservedOp ":" >> $arKnd
+
+  val ctor = ident << reservedOp ":" && (opt (squares (repeat1 ident)) wth Util.maybe (fn x => x) [])
+                   && parseTyp wth flat3
+
+  val data = reserved "datatype" >>
+             separate1 (!! (ident && kindAnn << reservedOp "=" && separate ctor (reservedOp "|") wth flat3) wth flat4')
+               (reserved "and") wth Data
+
+  val pattern = ident && repeat ident
+
   fun expf ()   =  !! (reserved "fn" >> arg && reservedOp "=>" >> $expf)
                    wth Abs o flat3'
                <|> !! (reserved "let" >> repeat ($decf) && reserved "in" >> $expf << reserved "end")
@@ -117,6 +139,8 @@ struct
                <|> !! (reserved "if" >> $expf && reserved "then" >> $expf
                        && reserved "else" >> $expf wth flat3)
                    wth If o flat4'
+               <|> !! (reserved "case" >> $expf && reserved "of" >> separate1 ($alt) (reservedOp "|") << reserved "end")
+                   wth Case o flat3'
                <|> $annExp
   and annExp () = !! ($appExp && opt tyann) wth (fn ((e, SOME t), p) => PAnn (e, t, p)
                                                   | ((e, NONE), _) => e)
@@ -129,6 +153,8 @@ struct
                                            NONE => e1
                                          | SOME e2 => Pair (e1, e2, pos))
 
+  and alt () = pattern && reservedOp "=>" >> $expf
+
   and valrec () = separate1 (!! ((ident <|> opid) && reservedOp "=" >> $expf)
                                 wth (fn ((v, e), p) => (v, [], e, p)))
                             (reserved "and")
@@ -137,13 +163,13 @@ struct
                        && repeat targ && tyann && reservedOp "=" >> $expf wth flat5) wth flat6'
 
   and valp   () =  reserved "rec" >> $valrec
-               <|> !! ((ident <|> opid) && $expf) wth (fn ((v, e), p) => [(v, [], e, p)])
+               <|> !! ((ident <|> opid) && reservedOp "=" >> $expf) wth (fn ((v, e), p) => [(v, [], e, p)])
 
   and decf   () =  reserved "val" >> $valp wth Fun
                <|> reserved "fun" >>
                      (try (separate1 ($fundef) (reserved "and") wth Fun)
                       <|> (separate1 ($pfundef) (reserved "and") wth PFun))
-                          
+               <|> data
 
 (*
 
@@ -211,9 +237,10 @@ struct
   val declist = TP.whiteSpace >> repeat dec
 
   val parseString = CharParser.parseString
-  val parseExp = CharParser.parseString exp
-  val parseDec = CharParser.parseString dec
-  val parseDecList = CharParser.parseString declist
+  fun debugParse s = outR o parseString s
+  val parseExp = CharParser.parseString (exp << eos)
+  val parseDec = CharParser.parseString (dec << eos)
+  val parseDecList = CharParser.parseString (declist << eos)
 
   fun parseFile fileName =
       let fun isEol s = (case Stream.front s of Stream.Cons (#"\n", _) => true | _ => false)

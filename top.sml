@@ -2,10 +2,13 @@ structure Top =
 struct
 
   local
+      val holes = ref [] : TAst.hole ref list ref
+      val env   = ref ([], []) : TAst.env ref
+
       fun eval e = e
       open TypeChecker
-      fun ppty t = TAst.ppty ([], t)
-      fun pptys s = TAst.pptys ([], s)
+      fun ppty t = TAst.ppty (#1 (!env), t)
+      fun pptys s = TAst.pptys (#1 (!env), s)
       fun showVal e = "-exp-:" ^ (ppty o #2 o TAst.annE) e ^ "\n"
       fun showDec (D, TAst.DF (DTFunctors.Fun ds)) =
           concat (map (fn (x, _, _, (_, ts)) => "val " ^ x ^ " : " ^ TAst.pptys (D, ts) ^ "\n") ds)
@@ -37,11 +40,10 @@ struct
       open Sum
   in
 
+  exception Err
+
   fun appDec (d as DF (Data ds), D) = List.revAppend (List.map #1 ds, D) before print (showDec (D, d))
     | appDec (d, D) = D before print (showDec (D, d))
-
-  val holes = ref [] : TAst.hole ref list ref
-  val env   = ref ([], []) : TAst.env ref
 
   fun getHolesE (THole hl) = (case !hl of
                                   Open _ => holes := hl :: !holes
@@ -60,19 +62,32 @@ struct
     | getHolesD (DF (PFun ds)) = app (fn (_, _, _, _, e, _) => getHolesE e) ds
     | getHolesD (DF (Data _)) = ()
 
-  fun runExp s =
-      (case Parser.parseExp s of
-           INL err => print err
+
+  fun runPExp e =
+      (case TypeChecker.tcExpr (!env, e) of
+           INL errs => app (print o showErr) errs
          | INR exp =>
-           (case TypeChecker.tcExpr (!env, exp) of
-                INL errs => app (print o showErr) errs
-              | INR exp =>
-                (print o showVal o eval) exp))
+           (print o showVal o eval) exp)
 
   fun parseExp s =
       (case Parser.parseExp s of
-           INL err => (print err; NONE)
-         | INR exp => SOME exp)
+           INL err => raise Err before print err
+         | INR exp => exp)
+
+  fun runExp s = runPExp (parseExp s)
+
+  fun runPDec d =
+      (case TypeChecker.tcDec (!env, d) of
+           INL errs => app (print o showErr) errs
+         | INR d'   => (getHolesD d';
+                        appDec (d', (#1 (!env)));
+                        env := extWith (!env, d')))
+
+  fun runReplExp s =
+      (case Parser.parseRepl s of
+           INL err => print err
+         | INR (INL e) => runPExp e
+         | INR (INR d) => runPDec d)
 
   fun parseDecs s =
       (case Parser.parseDecList s of
@@ -86,58 +101,56 @@ struct
            (case TypeChecker.tcDecs (!env, ds) of
                 INL errs => app (print o showErr) errs
               | INR (ds', E') => (app getHolesD ds';
-                                  foldl appDec [] ds';
+                                  foldl appDec (#1 (!env)) (rev ds');
                                   env := E')))
 
   fun runFile f =
-      (holes := [];
-       case Parser.parseFile f of
+      (case Parser.parseFile f of
            INL err => print err
          | INR ds => (case TypeChecker.tcDecs (!env, ds) of
                           INL errs => app (print o showErr) errs
                         | INR (ds', E') => (app getHolesD ds';
-                                            foldl appDec [] ds';
+                                            foldl appDec (#1 (!env)) (rev ds');
                                             env := E')))
 
   fun showHoles () =
       let fun pph (hr, (s, n)) =
               (case !hr of
-                   Open (_, (D, _, t)) => (s ^ Int.toString n ^ " : " ^ TAst.ppty (D, t) ^ "\n", n + 1)
+                   Open (_, (DG, _), (D, _, t)) => (s ^ Int.toString n ^ " : " ^ TAst.ppty (D @ DG, t) ^ "\n", n + 1)
                  | Closed t => raise Util.Impossible)
       in (print o #1 o foldl pph ("", 0)) (!holes)
       end
 
   fun showHole n =
-      let val (D, G, t) = (case (! (List.nth (!holes, n))) of
-                               Open (_, tys) => tys
-                             | Closed t => raise Util.Impossible)
+      let val (env, (D, G, t)) = (case (! (List.nth (!holes, n))) of
+                                      Open (_, env, tys) => (env, tys)
+                                    | Closed t => raise Util.Impossible)
           val tc = String.concatWith "\n" (List.map (#1 o #2) (rev D))
-          val vc = String.concat (List.map (fn (v, (ts, _)) => v ^ " : " ^ TAst.pptys (D, ts) ^ "\n") (rev G))
+          val vc = String.concat (List.map (fn (v, (ts, _)) => v ^ " : " ^ TAst.pptys (D @ #1 env, ts) ^ "\n") (rev G))
           val sep = "====================\n"
-          val ty = TAst.ppty (D, t)
+          val ty = TAst.ppty (D @ #1 env, t)
       in print (tc ^ "\n" ^ vc ^ sep ^ ty ^ "\n")
       end
 
   fun refineHole (n, s) =
       let val (prev, h :: post) = Util.takeDrop (n, !holes)
-          val Open (pos, (D, G, t)) = !h
+          val Open (pos, env, (D, G, t)) = !h
       in case Parser.parseExp s of
-             INL err => print err
+             INL err => raise Err before print err
            | INR e =>
-             (case TypeChecker.refineExpr (!env, (D, G), t, e) of
-                  INL errs => app (print o showErr) errs
+             (case TypeChecker.refineExpr (env, (D, G), t, e) of
+                  INL errs => raise Err before app (print o showErr) errs
                 | INR e' =>
                   (holes := [];
                    getHolesE e';
                    print ("Refining successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");
                    h := Closed e';
-                   holes := prev @ !holes @ post))
+                   length (!holes) before holes := prev @ !holes @ post))
       end
-
+          
   fun applyHole (n, id) =
-      let exception Err
-          val (prev, h :: post) = Util.takeDrop (n, !holes)
-          val Open (pos, (D, G, t)) = !h
+      let val (prev, h :: post) = Util.takeDrop (n, !holes)
+          val Open (pos, env, (D, G, t)) = !h
           fun countArrs ts =
               let open TAst
                   open DTFunctors
@@ -157,18 +170,20 @@ struct
               in if n = 0 then e else appNHoles (PT (App (e, PHole emptyPos, emptyPos)), n - 1)
               end
           val nexp = appNHoles (PAst.PT (DTFunctors.Var (id, emptyPos)), Int.max(0, narr - nart))
-          val nexp' = (case TypeChecker.refineExpr (!env, (D, G), t, nexp) of
+          val nexp' = (case TypeChecker.refineExpr (env, (D, G), t, nexp) of
                            INL errs => raise Err before app (print o showErr) errs
                          | INR e => e)
       in (holes := [];
           getHolesE nexp';
           print ("Application successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");
           h := Closed nexp';
-          holes := prev @ !holes @ post)
+          length (!holes) before holes := prev @ !holes @ post)
       end
 
-  end
+  fun clear () = (holes := []; env := ([], []); ConstrGen.restart ())
 
-  fun clear () = (holes := []; env := ([], []))
+  fun numHoles () = length (!holes)
+
+  end
 
 end

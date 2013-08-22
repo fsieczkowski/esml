@@ -3,6 +3,8 @@ struct
 
   exception Impossible
 
+  fun flip (x, (y, z)) = (y, (x, z))
+
   fun lookup ([], x) = NONE
     | lookup ((k, v) :: M, x) = if k = x then SOME v
                                 else lookup (M, x)

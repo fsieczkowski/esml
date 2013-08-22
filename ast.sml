@@ -106,53 +106,6 @@ struct
 
 end
 
-structure CGAst =
-struct
-
-  local open DTFunctors in
-
-  type var = string
-  type pos = Pos.pos
-  type tvar = int
-  type tname = string
-
-  datatype cgTyp = CTyUVar of int | CTyp of (tvar, cgTyp) typF
-  datatype cgTyS = CSPoly of (tname * (tvar * kind)) list * cgTyp | CSMono of cgTyp
-  type cgContext  = (var * (cgTyS * bdesc)) list
-  type cgTContext = (tname * (tvar * kind)) list
-  type cgEnv      = cgTContext * cgContext
-
-  (*{ty : cgTContext, var : cgContext}
-
-  fun mkEnv    (D, G)           = {ty = D,       var = G}
-  fun updTy    (env : cgEnv, D) = {ty = D,       var = #var env}
-  fun updVar   (env : cgEnv, G) = {ty = #ty env, var = G}*)
-
-  type cgPat  = var * (var * cgTyS) list
-
-  datatype cgTerm = CTerm of (var, var * cgTyp, cgAlt, cgDec, cgTerm, pos * cgTyp) termF
-                  | CHole of pos * cgEnv * cgTyp
-       and cgDec  = CDec  of (var, var * cgTyp, tname * (tvar * kind), cgTyp, cgTerm, pos * cgTyS, pos) decF
-  withtype cgAlt  = cgPat * cgTerm
-
-
-  datatype constr = CEqc of cgTyp * cgTyp * pos
-
-  fun ppuvar n = "?X" ^ Int.toString n
-  fun ppty D ty =
-      let fun pptyvar n = (case List.find (fn (_, (tv, _)) => n = tv) D of
-                               SOME (s, _) => s
-                             | NONE => "?V" ^ Int.toString n)
-          fun aux _ (CTyUVar n) = ppuvar n
-            | aux n (CTyp t) = DTFunctors.ppty aux pptyvar n t
-      in aux 1 ty
-      end
-  end
-
-  fun ppconstr (CEqc (t1, t2, pos)) = ppty [] t1 ^ " ~ " ^ ppty [] t2 ^ " @ " ^ Pos.toString pos ^ "\n"
-
-end
-
 structure TAst =
 struct
 
@@ -171,15 +124,23 @@ struct
 
   type pattern  = var * (var * tyS) list
 
-  datatype hole = Open of pos * (tycontext * context * typ) | Closed of term
+  datatype hole = Open of pos * env * (tycontext * context * typ) | Closed of term
        and term = TmF of (var, var * typ, alt, dec, term, pos * typ) termF
                 | THole of hole ref
-       and dec  = DF of (var, var * typ, tvar * (tname * kind), typ, term,  pos * tyS, pos) decF
+       and dec  = DF of (var, var * typ, tvar * (tname * kind), typ, term,  pos * tyS, pos * (var * tyS) list) decF
   withtype alt  = pattern * term
+
+  fun extWith ((D, G), DF (Fun  ds)) = (D, foldl (fn (fd, G) => (#1 fd, (#2 (#4 fd), BVar)) :: G) G ds)
+    | extWith ((D, G), DF (PFun ds)) = (D, foldl (fn (fd, G) => (#1 fd, (#2 (#6 fd), BVar)) :: G) G ds)
+    | extWith (E,      DF (Data dt)) =
+      let fun hData ((tvb, _, _, (_, cts)), (D, G)) =
+              (tvb :: D, foldl (fn ((x, tS), G) => (x, (tS, Ctor)) :: G) G cts)
+      in  foldl hData E dt
+      end
 
   fun annE (TmF t) = DTFunctors.annE t
     | annE (THole hr) = (case !hr of
-                             Open (pos, nty) => (pos, #3 nty)
+                             Open (pos, _, nty) => (pos, #3 nty)
                            | Closed t => annE t)
 
   fun ppty (D, ty) =
@@ -204,5 +165,46 @@ struct
       end
 
   end
+
+end
+
+structure CGAst =
+struct
+
+  local open DTFunctors in
+
+  type var = string
+  type pos = Pos.pos
+  type tvar = int
+  type tname = string
+
+  datatype cgTyp = CTyUVar of int | CTyp of (tvar, cgTyp) typF
+  datatype cgTyS = CSPoly of (tname * (tvar * kind)) list * cgTyp | CSMono of cgTyp
+  type cgContext  = (var * (cgTyS * bdesc)) list
+  type cgTContext = (tname * (tvar * kind)) list
+  type cgEnv      = cgTContext * cgContext
+
+  type cgPat  = var * (var * cgTyS) list
+
+  datatype cgTerm = CTerm of (var, var * cgTyp, cgAlt, cgDec, cgTerm, pos * cgTyp) termF
+                  | CHole of pos * TAst.env * cgEnv * cgTyp
+       and cgDec  = CDec  of (var, var * cgTyp, tname * (tvar * kind), cgTyp, cgTerm, pos * cgTyS, pos * (var * cgTyS) list) decF
+  withtype cgAlt  = cgPat * cgTerm
+
+
+  datatype constr = CEqc of cgTyp * cgTyp * pos
+
+  fun ppuvar n = "?X" ^ Int.toString n
+  fun ppty D ty =
+      let fun pptyvar n = (case List.find (fn (_, (tv, _)) => n = tv) D of
+                               SOME (s, _) => s
+                             | NONE => "?V" ^ Int.toString n)
+          fun aux _ (CTyUVar n) = ppuvar n
+            | aux n (CTyp t) = DTFunctors.ppty aux pptyvar n t
+      in aux 1 ty
+      end
+  end
+
+  fun ppconstr (CEqc (t1, t2, pos)) = ppty [] t1 ^ " ~ " ^ ppty [] t2 ^ " @ " ^ Pos.toString pos ^ "\n"
 
 end

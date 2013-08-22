@@ -236,10 +236,13 @@ struct
   val dec = whiteSpace >> $decf
   val declist = TP.whiteSpace >> repeat dec
 
+  val replExp = whiteSpace >> ($expf wth INL <|> $decf wth INR)
+
   val parseString = CharParser.parseString
   fun debugParse s = outR o parseString s
   val parseExp = CharParser.parseString (exp << eos)
   val parseDec = CharParser.parseString (dec << eos)
+  val parseRepl = CharParser.parseString (replExp << eos)
   val parseDecList = CharParser.parseString (declist << eos)
 
   fun parseFile fileName =

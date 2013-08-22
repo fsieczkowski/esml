@@ -8,6 +8,7 @@ sig
                         CGAst.cgTerm * CGAst.constr list
     val getErrors : unit -> PAst.pos err list
     val toString : CGAst.pos -> string
+    val restart  : unit -> unit
 end =
 struct
 
@@ -33,8 +34,6 @@ struct
 
   datatype 'ed err = VarUndef of var * 'ed | TVarUndef of tname * 'ed
   val errors = ref [] : pos err list ref
-
-  fun flip (x, (y, z)) = (y, (x, z))
 
   fun tcop bop =
       let val arr  = CTyp o TyArr
@@ -223,7 +222,7 @@ struct
       in  (e', CEqc (t, at, pos) :: cs')
       end
     | cgExpr (env, PHole pos, t, cs) =
-      (CHole (pos, (#lty env, #lvar env), t), cs)
+      (CHole (pos, (#gty env, #gvar env), (#lty env, #lvar env), t), cs)
 
   and cgDec (env, PD (Fun defs), cs) =
       let fun hArg (arg, (tas, tr)) =
@@ -265,20 +264,20 @@ struct
         val DR = List.revAppend (tyks, #lty env)
         (* Handle a constructor: generate tyvars for polymorphic values,
          * check that the kind works out, and add it to the environment. *)
-        fun hCon tv D pos ((v, tns, ty), (cs, G)) =
+        fun hCon tv D pos ((v, tns, ty), (cs, cts)) =
             let val tvs = map (fn tn => (tn, (newTVar (), KTyp))) tns
                 val DC = List.revAppend (tvs, D)
                 val tres = kindCheck (DC @ map flip (#gty env), pos, ty, KTyp)
                 val _ = ctorCheck (DC, tv, tres)
-            in ((v, tvs, tres) :: cs, (v, (CSPoly (tvs, tres), Ctor)) :: G)
+            in ((v, tvs, tres) :: cs, (v, CSPoly (tvs, tres)) :: cts)
             end
         (* Handle one (of possibly several mutually recursive) declaration:
          * get the tyvar associated with the type name earlier, handle the constructors
          * and generate the resulting environment. *)
         fun hDec D ((tn, k, cs, pos), (ds, G)) =
             let val tv = valOf (lookup (tyks, tn))
-                val (rcs, GR) = foldl (hCon (#1 tv) D pos) ([], G) cs
-            in (((tn, tv), k, rev rcs, pos) :: ds, GR)
+                val (rcs, rcts) = foldl (hCon (#1 tv) D pos) ([], []) cs
+            in (((tn, tv), k, rev rcs, (pos, rev rcts)) :: ds, map (fn (x, y) => (x, (y, Ctor))) rcts @ G)
             end
         val (dsr, GR) = foldl (hDec DR) ([], #lvar env) ds
     in (env withLT DR withLV GR, CDec (Data (rev dsr)), cs)
@@ -293,7 +292,8 @@ struct
       in  aux (ds, env, [], cs)
       end
 
-  fun reset () = (tvcntr := 0; uvcntr := 0; errors := [])
+  fun reset () = (uvcntr := 0; errors := [])
+  fun restart () = (tvcntr := 0; reset ())
 
   fun genConstrExpr (E, e) =
        cgExpr (mkEnv (E, ([], [])), e, newUVar (), []) before reset ()
@@ -521,12 +521,12 @@ struct
       TmF (If (trExpr (sub, e1), trExpr (sub, e2), trExpr (sub, e3), (pos, subst (sub, ty))))
     | trExpr (sub, CTerm (Case (e, alts, (pos, ty)))) =
       TmF (Case (trExpr (sub, e), map (fn a => trAlt (sub, a)) alts, (pos, subst (sub, ty))))
-    | trExpr (sub, CHole (pos, env, t)) =
+    | trExpr (sub, CHole (pos, env, (D, G), t)) =
       (* This'll probably have to become smarter *)
-      let val ntys = (map flip (#1 env),
-                      map (fn (x, (tys, d)) => (x, (substS (sub, tys), d))) (#2 env),
+      let val ntys = (map flip D,
+                      map (fn (x, (tys, d)) => (x, (substS (sub, tys), d))) G,
                       subst (sub, t))
-      in  THole (ref (Open (pos, ntys)))
+      in  THole (ref (Open (pos, env, ntys)))
       end
 
   and trAlt (sub, ((c, bds), expr)) =
@@ -541,11 +541,11 @@ struct
                         (x, map flip targs, map (fn (x, ty) => (x, subst (sub, ty))) args,
                          subst (sub, ty), trExpr (sub, e), (pos, substS (sub, tyS)))) ds))
     | trDec (sub, CDec (Data ds)) =
-      DF (Data (map (fn ((tn, (tv, k')), k, cs, ann) =>
-                        ((tv, (tn, k')), k,
-                         map (fn (x, tvs, ty) => (x, map (fn (tn, (tv, k)) =>
-                                                             (tv, (tn, k))) tvs,
-                                                  subst (sub, ty))) cs, ann)) ds))
+      let fun hCtor (x, tvs, ty)  = (x, map flip tvs, subst (sub, ty))
+          fun hCTyp (x, tyS)      = (x, substS (sub, tyS))
+          fun hData (tv, k, cs, (p, cts)) = (flip tv, k, map hCtor cs, (p, map hCTyp cts))
+      in DF (Data (map hData ds))
+      end
 
   and trDecs (sub, ds) = map (fn d => trDec (sub, d)) ds
 
@@ -626,12 +626,11 @@ struct
 
   fun tcDecs (E, ds) =
       let open Sum
-          (* TODO: make sure the updated environment gets returned too. `*)
           fun hD (d, INL err) = INL err
             | hD (d, INR (ds, E)) =
               (case tcDec (E, d) of
                    INL err => INL err
-                 | INR d'  => INR (d' :: ds, E))
+                 | INR d'  => INR (d' :: ds, extWith (E, d')))
       in foldl hD (INR ([], E)) ds
       end
 

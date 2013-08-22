@@ -145,7 +145,7 @@ struct
   and annExp () = !! ($appExp && opt tyann) wth (fn ((e, SOME t), p) => PAnn (e, t, p)
                                                   | ((e, NONE), _) => e)
   and appExp () = chainl1 ($atExp) (succeed (App o mergePos))
-  and atExp  () =  var <|> !! TP.integer wth IntL <|> idval <|> rop <|> hole
+  and atExp  () =  var <|> !! TP.integer wth IntL <|> try idval <|> rop <|> hole
                <|> !! (reserved "fst" >> $atExp) wth Proj1
                <|> !! (reserved "snd" >> $atExp) wth Proj2
                <|> !! (parens ($expf && opt (comma >> $expf))) wth

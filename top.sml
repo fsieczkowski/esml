@@ -41,6 +41,7 @@ struct
     | appDec (d, D) = D before print (showDec (D, d))
 
   val holes = ref [] : TAst.hole ref list ref
+  val env   = ref ([], []) : TAst.env ref
 
   fun getHolesE (THole hl) = (case !hl of
                                   Open _ => holes := hl :: !holes
@@ -116,24 +117,56 @@ struct
       end
 
   fun refineHole (n, s) =
+      let val (prev, h :: post) = Util.takeDrop (n, !holes)
+          val Open (pos, (D, G, t), _) = !h
+      in case Parser.parseExp s of
+             INL err => print err
+           | INR e =>
+             (case TypeChecker.refineExpr ((D, G), t, e) of
+                  INL errs => app (print o showErr) errs
+                | INR e' =>
+                  (holes := [];
+                   getHolesE e';
+                   print ("Refining successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");
+                   h := Closed e';
+                   holes := prev @ !holes @ post))
+      end
+
+  fun applyHole (n, id) =
       let exception Err
-          val e = (case Parser.parseExp s of
-                       INL err => raise Err before print err
-                     | INR e => e)
           val (prev, h :: post) = Util.takeDrop (n, !holes)
           val Open (pos, (D, G, t), _) = !h
-          val e' = (case TypeChecker.refineExpr ((D, G), t, e) of
-                        INL errs => raise Err before app (print o showErr) errs
-                      | INR e => e)
+          fun countArrs ts =
+              let open TAst
+                  open DTFunctors
+                  fun aux (TyF (TyArr (_, t)), acc) = aux (t, acc + 1)
+                    | aux (_, acc) = acc
+              in aux (ts, 0)
+              end
+          val narr = (case lookup (G, id) of
+                          SOME (TAst.SPoly (_, t), _) => countArrs t
+                        | SOME (TAst.SMono t, _) => countArrs t
+                        | NONE => raise Err before print ("Undeclared identifier " ^ id ^ "\n"))
+          val nart = countArrs t
+          val emptyPos = Pos.pos (Coord.init "-") (Coord.init "-")
+          fun appNHoles (e, n) =
+              let open PAst
+                  open DTFunctors
+              in if n = 0 then e else appNHoles (PT (App (e, PHole emptyPos, emptyPos)), n - 1)
+              end
+          val nexp = appNHoles (PAst.PT (DTFunctors.Var (id, emptyPos)), Int.max(0, narr - nart))
+          val nexp' = (case TypeChecker.refineExpr ((D, G), t, nexp) of
+                           INL errs => raise Err before app (print o showErr) errs
+                         | INR e => e)
       in (holes := [];
-          getHolesE e';
-          print ("Refining successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");
-          h := Closed e';
+          getHolesE nexp';
+          print ("Application successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");
+          h := Closed nexp';
           holes := prev @ !holes @ post)
       end
 
   end
 
-  fun clear () = holes := []
+  fun clear () = (holes := []; env := ([], []))
 
 end

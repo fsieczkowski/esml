@@ -2,10 +2,9 @@ structure ConstrGen :
 sig
 
     datatype 'ed err = VarUndef of CGAst.var * 'ed | TVarUndef of CGAst.tname * 'ed
-    val genConstrExpr : PAst.pTerm -> CGAst.cgTerm * CGAst.constr list
-    val genConstrDec  : PAst.pDec  -> CGAst.cgDec  * CGAst.constr list
-    val genConstrDecs : PAst.pDec list  -> CGAst.cgDec list  * CGAst.constr list
-    val genConstrFrom : TAst.env * TAst.typ * PAst.pTerm ->
+    val genConstrExpr : TAst.env * PAst.pTerm -> CGAst.cgTerm * CGAst.constr list
+    val genConstrDec  : TAst.env * PAst.pDec  -> CGAst.cgDec  * CGAst.constr list
+    val genConstrFrom : TAst.env * TAst.env * TAst.typ * PAst.pTerm ->
                         CGAst.cgTerm * CGAst.constr list
     val getErrors : unit -> PAst.pos err list
     val toString : CGAst.pos -> string
@@ -130,13 +129,35 @@ struct
 
   val toString = Pos.toString
 
-  fun cgExpr (env : CGAst.cgEnv, PT (Var (x, pos)), t, cs) =
-      (case lookup (#var env, x) of
+  fun trTypNM (TAst.TyMono k) = raise Impossible
+    | trTypNM (TAst.TyF (TyArr  (t1, t2))) = CTyp (TyArr  (trTypNM t1, trTypNM t2))
+    | trTypNM (TAst.TyF (TyProd (t1, t2))) = CTyp (TyProd (trTypNM t1, trTypNM t2))
+    | trTypNM (TAst.TyF (TyApp  (t1, t2))) = CTyp (TyApp  (trTypNM t1, trTypNM t2))
+    | trTypNM (TAst.TyF (TyVar tv)) = CTyp (TyVar tv)
+    | trTypNM (TAst.TyF TyBool)     = CTyp TyBool
+    | trTypNM (TAst.TyF TyInt)      = CTyp TyInt
+  fun trTySNM (TAst.SPoly (bs, t)) = CSPoly (map flip bs, trTypNM t)
+    | trTySNM (TAst.SMono t)       = CSMono (trTypNM t)
+
+  (* Environments for constraint generation *)
+  type env = {lty : cgTContext, gty : TAst.tycontext, lvar : cgContext, gvar : TAst.context}
+
+  fun mkEnv ((D, G), (DL, GL)) = {lty = DL, gty = D, lvar = GL, gvar = G}
+  fun withLV (E : env, GL) = {lty = #lty E, gty = #gty E, lvar = GL,      gvar = #gvar E}
+  fun withLT  (E : env, DL) = {lty = DL,     gty = #gty E, lvar = #lvar E, gvar = #gvar E}
+
+  infix 1 withLV
+  infix 1 withLT
+
+  fun cgExpr (env, PT (Var (x, pos)), t, cs) =
+      (case lookup (#lvar env, x) of
            SOME (tyS, _) => (CTerm (Var (x, (pos, t))), CEqc (instTyS tyS, t, pos) :: cs)
-         | NONE => raise NotFound)
+         | NONE => (case lookup (#gvar env, x) of
+                        SOME (ttS, _) => (CTerm (Var (x, (pos, t))), CEqc (instTyS (trTySNM ttS), t, pos) :: cs)
+                      | NONE => raise NotFound))
     | cgExpr (env, PT (Abs (x, e, pos)), t, cs) =
       let val (targ, tres) = (newUVar (), newUVar ())
-          val (e', rcs) = cgExpr (updVar (env, (x, (CSMono targ, BVar)) :: #var env), e, tres, cs)
+          val (e', rcs) = cgExpr (env withLV (x, (CSMono targ, BVar)) :: #lvar env, e, tres, cs)
       in  (CTerm (Abs ((x, targ), e', (pos, t))), CEqc (t, CTyp (TyArr (targ, tres)), pos) :: rcs)
       end
     | cgExpr (env, PT (App (e1, e2, pos)), t, cs) =
@@ -182,24 +203,27 @@ struct
       let val te = newUVar ()
           val (e', cs1) = cgExpr (env, e, te, cs)
           fun hAlt (((c, args), eb), (ralts, cs)) =
-              let val tc = (case lookup (#var env, c) of
+              let val tc = (case lookup (#lvar env, c) of
                                 SOME (tS, Ctor) => instTyS tS
-                              | SOME (_,  BVar)   => raise Fail "Not a constructor"
-                              | NONE => raise NotFound)
+                              | SOME (_,  BVar) => raise Fail "Not a constructor"
+                              | NONE => (case lookup (#gvar env, c) of
+                                             SOME (ttS, Ctor) => instTyS (trTySNM ttS)
+                                           | SOME (_,   BVar) => raise Fail "Not a constructor"
+                                           | NONE => raise NotFound))
                   val (ft, bds)  = bindArgs (args, tc)
-                  val (eb', cs') = cgExpr (updVar (env, List.revAppend (map (fn (x, ts) => (x, (ts, BVar))) bds, #var env)), eb, t, cs)
+                  val (eb', cs') = cgExpr (env withLV List.revAppend (map (fn (x, ts) => (x, (ts, BVar))) bds, #lvar env), eb, t, cs)
               in (((c, bds), eb') :: ralts , CEqc (ft, te, pos) :: cs')
               end
           val (ralts, cs2) = foldl hAlt ([], cs1) alts
       in (CTerm (Case (e', rev ralts, (pos, t))), cs2)
       end
     | cgExpr (env, PAnn (e, pt, pos), t, cs) =
-      let val at = kindCheck (#ty env, pos, pt, KTyp)
+      let val at = kindCheck (#lty env @ map flip (#gty env), pos, pt, KTyp)
           val (e', cs') = cgExpr (env, e, t, cs)
       in  (e', CEqc (t, at, pos) :: cs')
       end
     | cgExpr (env, PHole pos, t, cs) =
-      (CHole (pos, env, t), cs)
+      (CHole (pos, (#lty env, #lvar env), t), cs)
 
   and cgDec (env, PD (Fun defs), cs) =
       let fun hArg (arg, (tas, tr)) =
@@ -211,42 +235,40 @@ struct
               let val tres = newUVar ()
                   val (tas, ty) = foldr hArg ([], tres) args
                   val (GR, ds', cs') = aux ((x, (CSMono ty, BVar)) :: G, ds, cs)
-                  val (e', rcs) = cgExpr (updVar (env, List.revAppend (map (fn (x, t) => (x, (CSMono t, BVar))) tas, GR)), e, tres, cs')
+                  val (e', rcs) = cgExpr (env withLV List.revAppend (map (fn (x, t) => (x, (CSMono t, BVar))) tas, GR), e, tres, cs')
               in  (GR, (x, tas, e', (pos, CSMono ty)) :: ds', rcs)
               end
-          val (GR, dsr, csr) = aux (#var env, defs, cs)
-          val envR = updVar (env, GR)
-      in  (envR, CDec (Fun dsr), csr)
+          val (GR, dsr, csr) = aux (#lvar env, defs, cs)
+      in  (env withLV GR, CDec (Fun dsr), csr)
       end
     | cgDec (env, PD (PFun defs), cs) =
       let fun hArg (D, pos) ((x, pt), (asC, tr)) =
-              let val t = kindCheck (D, pos, pt, KTyp)
+              let val t = kindCheck (D @ map flip (#gty env), pos, pt, KTyp)
               in  ((x, t) :: asC, (CTyp (TyArr (t, tr))))
               end
           fun aux (G, [], cs) = (G, [], cs)
             | aux (G, (x, targs, vargs, tres, e, pos) :: ds, cs) =
               let val targsC = map (fn x => (x, (newTVar (), KTyp))) targs
-                  val DC = List.revAppend (targsC, #ty env)
-                  val tresC = kindCheck (DC, pos, tres, KTyp)
+                  val DC = List.revAppend (targsC, #lty env)
+                  val tresC = kindCheck (DC @ map flip (#gty env), pos, tres, KTyp)
                   val (vargsC, tyC) = foldr (hArg (DC, pos)) ([], tresC) vargs
                   val (GR, ds', cs') = aux ((x, (CSPoly (targsC, tyC), BVar)) :: G, ds, cs)
-                  val (eC, rcs) = cgExpr (mkEnv (DC, List.revAppend (map (fn (x, t) => (x, (CSMono t, BVar))) vargsC, GR)), e, tresC, cs')
+                  val (eC, rcs) = cgExpr (env withLT DC withLV List.revAppend (map (fn (x, t) => (x, (CSMono t, BVar))) vargsC, GR), e, tresC, cs')
               in  (GR, (x, targsC, vargsC, tresC, eC, (pos, CSPoly (targsC, tyC))) :: ds', rcs)
               end
-          val (GR, dsr, csr) = aux (#var env, defs, cs)
-          val envR = updVar (env, GR)
-      in  (envR, CDec (PFun dsr), csr)
+          val (GR, dsr, csr) = aux (#lvar env, defs, cs)
+      in  (env withLV GR, CDec (PFun dsr), csr)
       end
     | cgDec (env, PD (Data ds), cs) =
     let (* First, gather the names and kinds of datatypes, and generate tyvars for them *)
         val tyks = map (fn (tn, k, _, _) => (tn, (newTVar (), k))) ds
-        val DR = List.revAppend (tyks, #ty env)
+        val DR = List.revAppend (tyks, #lty env)
         (* Handle a constructor: generate tyvars for polymorphic values,
          * check that the kind works out, and add it to the environment. *)
         fun hCon tv D pos ((v, tns, ty), (cs, G)) =
             let val tvs = map (fn tn => (tn, (newTVar (), KTyp))) tns
                 val DC = List.revAppend (tvs, D)
-                val tres = kindCheck (DC, pos, ty, KTyp)
+                val tres = kindCheck (DC @ map flip (#gty env), pos, ty, KTyp)
                 val _ = ctorCheck (DC, tv, tres)
             in ((v, tvs, tres) :: cs, (v, (CSPoly (tvs, tres), Ctor)) :: G)
             end
@@ -258,8 +280,8 @@ struct
                 val (rcs, GR) = foldl (hCon (#1 tv) D pos) ([], G) cs
             in (((tn, tv), k, rev rcs, pos) :: ds, GR)
             end
-        val (dsr, GR) = foldl (hDec DR) ([], #var env) ds
-    in (mkEnv (DR, GR), CDec (Data (rev dsr)), cs)
+        val (dsr, GR) = foldl (hDec DR) ([], #lvar env) ds
+    in (env withLT DR withLV GR, CDec (Data (rev dsr)), cs)
     end
 
   and cgDecs (env, ds, cs) =
@@ -273,18 +295,18 @@ struct
 
   fun reset () = (tvcntr := 0; uvcntr := 0; errors := [])
 
-  fun genConstrExpr e =
-       cgExpr (mkEnv ([], []), e, newUVar (), []) before reset ()
+  fun genConstrExpr (E, e) =
+       cgExpr (mkEnv (E, ([], [])), e, newUVar (), []) before reset ()
 
-  fun genConstrDec d =
+  fun genConstrDec (E, d) =
       let val _ = reset ()
-          val (_, d, cs) = cgDec (mkEnv ([], []), d, [])
+          val (_, d, cs) = cgDec (mkEnv (E, ([], [])), d, [])
       in (d, cs)
       end
 
-  fun genConstrDecs ds =
+  fun genConstrDecs (E, ds) =
       let val _ = reset ()
-          val (_, ds, cs) = cgDecs (mkEnv ([], []), ds, [])
+          val (_, ds, cs) = cgDecs (mkEnv (E, ([], [])), ds, [])
       in (ds, cs)
       end
 
@@ -311,11 +333,11 @@ struct
         | trInstTyS (TAst.SMono t)       = CSMono (trInstTy t)
 
   in
-  fun genConstrFrom ((D, G), t, e) =
+  fun genConstrFrom (E, (D, G), t, e) =
       let val DC = map flip D
           val GC = map (fn (x, (ts, d)) => (x, (trInstTyS ts, d))) G
           val tc = trInstTy t
-      in cgExpr (mkEnv (DC, GC), e, tc, []) before reset ()
+      in cgExpr (mkEnv (E, (DC, GC)), e, tc, []) before reset ()
       end
   end
 
@@ -501,10 +523,10 @@ struct
       TmF (Case (trExpr (sub, e), map (fn a => trAlt (sub, a)) alts, (pos, subst (sub, ty))))
     | trExpr (sub, CHole (pos, env, t)) =
       (* This'll probably have to become smarter *)
-      let val ntys = (map flip (#ty env),
-                      map (fn (x, (tys, d)) => (x, (substS (sub, tys), d))) (#var env),
+      let val ntys = (map flip (#1 env),
+                      map (fn (x, (tys, d)) => (x, (substS (sub, tys), d))) (#2 env),
                       subst (sub, t))
-      in  THole (ref (Open (pos, ntys, (env, t))))
+      in  THole (ref (Open (pos, ntys)))
       end
 
   and trAlt (sub, ((c, bds), expr)) =
@@ -573,8 +595,8 @@ struct
       in Sum.INL (map docg cgErrs @ map (dotc subst) tyErrs)
       end
 
-  fun tcExpr e =
-      let val (e', cs) = ConstrGen.genConstrExpr e
+  fun tcExpr (E, e) =
+      let val (e', cs) = ConstrGen.genConstrExpr (E, e)
           val cgErrs   = ConstrGen.getErrors ()
           val residual = CSolver.simplify (map (fn x => (x, x)) cs)
           val sub      = CSolver.getSubst ()
@@ -588,8 +610,8 @@ struct
          else reportErrors (cgErrs, residual, sub)
       end
 
-  fun tcDec d =
-      let val (d', cs) = ConstrGen.genConstrDec d
+  fun tcDec (E, d) =
+      let val (d', cs) = ConstrGen.genConstrDec (E, d)
           val cgErrs   = ConstrGen.getErrors ()
           val residual = CSolver.simplify (map (fn x => (x, x)) cs)
           val sub      = CSolver.getSubst ()
@@ -602,22 +624,19 @@ struct
          else reportErrors (cgErrs, residual, sub)
       end
 
-  fun tcDecs ds =
-      let val (ds', cs) = ConstrGen.genConstrDecs ds
-          val cgErrs   = ConstrGen.getErrors ()
-          val residual = CSolver.simplify (map (fn x => (x, x)) cs)
-          val sub      = CSolver.getSubst ()
-      in if null cgErrs andalso null residual
-         then let val ds'' = trDecs (sub, ds')
-                  val errs = List.concat (map monErrs ds'')
-              in if null errs then Sum.INR ds''
-                 else reportMS errs
-              end
-         else reportErrors (cgErrs, residual, sub)
+  fun tcDecs (E, ds) =
+      let open Sum
+          (* TODO: make sure the updated environment gets returned too. `*)
+          fun hD (d, INL err) = INL err
+            | hD (d, INR (ds, E)) =
+              (case tcDec (E, d) of
+                   INL err => INL err
+                 | INR d'  => INR (d' :: ds, E))
+      in foldl hD (INR ([], E)) ds
       end
 
-  fun refineExpr (env, t, e) =
-      let val (e', cs) = ConstrGen.genConstrFrom (env, t, e)
+  fun refineExpr (E, env, t, e) =
+      let val (e', cs) = ConstrGen.genConstrFrom (E, env, t, e)
           val cgErrs   = ConstrGen.getErrors ()
           val residual = CSolver.simplify (map (fn x => (x, x)) cs)
           val sub      = CSolver.getSubst ()

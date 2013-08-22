@@ -120,11 +120,13 @@ struct
   datatype cgTyS = CSPoly of (tname * (tvar * kind)) list * cgTyp | CSMono of cgTyp
   type cgContext  = (var * (cgTyS * bdesc)) list
   type cgTContext = (tname * (tvar * kind)) list
-  type cgEnv     = {ty : cgTContext, var : cgContext}
+  type cgEnv      = cgTContext * cgContext
+
+  (*{ty : cgTContext, var : cgContext}
 
   fun mkEnv    (D, G)           = {ty = D,       var = G}
   fun updTy    (env : cgEnv, D) = {ty = D,       var = #var env}
-  fun updVar   (env : cgEnv, G) = {ty = #ty env, var = G}
+  fun updVar   (env : cgEnv, G) = {ty = #ty env, var = G}*)
 
   type cgPat  = var * (var * cgTyS) list
 
@@ -169,7 +171,7 @@ struct
 
   type pattern  = var * (var * tyS) list
 
-  datatype hole = Open of pos * (tycontext * context * typ) * (CGAst.cgEnv * CGAst.cgTyp) | Closed of term
+  datatype hole = Open of pos * (tycontext * context * typ) | Closed of term
        and term = TmF of (var, var * typ, alt, dec, term, pos * typ) termF
                 | THole of hole ref
        and dec  = DF of (var, var * typ, tvar * (tname * kind), typ, term,  pos * tyS, pos) decF
@@ -177,7 +179,7 @@ struct
 
   fun annE (TmF t) = DTFunctors.annE t
     | annE (THole hr) = (case !hr of
-                             Open (pos, nty, _) => (pos, #3 nty)
+                             Open (pos, nty) => (pos, #3 nty)
                            | Closed t => annE t)
 
   fun ppty (D, ty) =

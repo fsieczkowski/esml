@@ -1,0 +1,10 @@
+$(SMACKAGE)/cmlib/v1/cmlib.mlb
+$(SMACKAGE)/parcom/v1/parcom.mlb
+$(SMACKAGE)/readline/v1/readline.mlb
+
+util.sml
+ast.sml
+parse.sml
+tchck.sml
+top.sml
+wrap.sml

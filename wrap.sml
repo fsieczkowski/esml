@@ -44,6 +44,7 @@ struct
                                                    else fail "Expected a number.")) wth ShowOne
           val focus   = try (string ":focus") >> spaces >> number wth Focus
           val unfocus = try (string ":unfocus" return Unfocus)
+          val clear   = try (string ":clear" return Clear)
           val load    = try (string ":load") >> spaces >> str wth Load
           val refine  = try (string ":refine") >> spaces >>
                             (if focused () then succeed (valOf (!fh)) else number << spaces)

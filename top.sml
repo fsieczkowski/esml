@@ -30,14 +30,14 @@ struct
           Pos.toString pos ^ " Error: unbound type variable: " ^ a ^ "\n"
         | showErr (EEscapedMonos (ns, ts, pos)) =
           Pos.toString pos ^ " Type error: free monomorphic type variables.\nIn type: " ^ pptys ts ^ "\n"
-        | showErr (EStructDiff (t1, t2, st1, st2, pos)) =
+        | showErr (EStructDiff (D, t1, t2, st1, st2, pos)) =
           Pos.toString pos ^ " Type error: incompatible types.\nCannot match: "
-          ^ CGAst.ppty [] t1 ^ " with " ^ CGAst.ppty [] t2 ^ " arising from the following equation.\nExpected: "
-          ^ CGAst.ppty [] st1 ^ "\nActual: " ^ CGAst.ppty [] st2 ^ "\n"
-        | showErr (ECircularDep (n, t, st1, st2, pos)) =
+          ^ CGAst.ppty D t1 ^ " with " ^ CGAst.ppty D t2 ^ " arising from the following equation.\nExpected: "
+          ^ CGAst.ppty D st1 ^ "\nActual: " ^ CGAst.ppty D st2 ^ "\n"
+        | showErr (ECircularDep (D, n, t, st1, st2, pos)) =
           Pos.toString pos ^ " Type error: circular dependency.\nType: "
-          ^ CGAst.ppuvar n ^ " occurs in " ^ CGAst.ppty [] t ^ " arising from the following equation.\nExpected: "
-          ^ CGAst.ppty [] st1 ^ "\nActual: " ^ CGAst.ppty [] st2 ^ "\n"
+          ^ CGAst.ppuvar n ^ " occurs in " ^ CGAst.ppty D t ^ " arising from the following equation.\nExpected: "
+          ^ CGAst.ppty D st1 ^ "\nActual: " ^ CGAst.ppty D st2 ^ "\n"
         | showErr (EOther (s, pos)) = Pos.toString pos ^ " " ^ s
       open Sum
   in

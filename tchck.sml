@@ -143,16 +143,18 @@ struct
   infix 1 withLV
   infix 1 withLT
 
+  fun getTEnv (env : env) = #lty env @ map flip (#gty env)
+
   fun cgExpr (env, PT (Var (x, pos)), t, cs) =
       (case lookup (#lvar env, x) of
-           SOME (tyS, _) => (CTerm (Var (x, (pos, t))), CEqc (instTyS tyS, t, pos) :: cs)
+           SOME (tyS, _) => (CTerm (Var (x, (pos, t))), CEqc (getTEnv env, instTyS tyS, t, pos) :: cs)
          | NONE => (case lookup (#gvar env, x) of
-                        SOME (ttS, _) => (CTerm (Var (x, (pos, t))), CEqc (instTyS (TAst.trTySNM ttS), t, pos) :: cs)
+                        SOME (ttS, _) => (CTerm (Var (x, (pos, t))), CEqc (getTEnv env, instTyS (TAst.trTySNM ttS), t, pos) :: cs)
                       | NONE => (errors := VarUndef (x, pos) :: !errors; (CTerm (Var (x, (pos, t))), cs))))
     | cgExpr (env, PT (Abs (x, e, pos)), t, cs) =
       let val (targ, tres) = (newUVar (), newUVar ())
           val (e', rcs) = cgExpr (env withLV (x, (CSMono targ, BVar)) :: #lvar env, e, tres, cs)
-      in  (CTerm (Abs ((x, targ), e', (pos, t))), CEqc (t, CTyp (TyArr (targ, tres)), pos) :: rcs)
+      in  (CTerm (Abs ((x, targ), e', (pos, t))), CEqc (getTEnv env, t, CTyp (TyArr (targ, tres)), pos) :: rcs)
       end
     | cgExpr (env, PT (App (e1, e2, pos)), t, cs) =
       let val targ = newUVar ()
@@ -164,7 +166,7 @@ struct
       let val (tl, tr) = (newUVar (), newUVar ())
           val (e1', cs') = cgExpr (env, e1, tl, cs)
           val (e2', rcs) = cgExpr (env, e2, tr, cs')
-      in  (CTerm (Pair (e1', e2', (pos, t))), CEqc (t, CTyp (TyProd (tl, tr)), pos) :: rcs)
+      in  (CTerm (Pair (e1', e2', (pos, t))), CEqc (getTEnv env, t, CTyp (TyProd (tl, tr)), pos) :: rcs)
       end
     | cgExpr (env, PT (Proj1 (e, pos)), t, cs) =
       let val tr = newUVar ()
@@ -177,11 +179,11 @@ struct
       in  (CTerm (Proj1 (e', (pos, t))), cs')
       end
     | cgExpr (env, PT (IntLit (n, pos)), t, cs) =
-      (CTerm (IntLit (n, (pos, t))), CEqc (t, CTyp TyInt, pos) :: cs)
+      (CTerm (IntLit (n, (pos, t))), CEqc (getTEnv env, t, CTyp TyInt, pos) :: cs)
     | cgExpr (env, PT (BoolLit (b, pos)), t, cs) =
-      (CTerm (BoolLit (b, (pos, t))), CEqc (t, CTyp TyBool, pos) :: cs)
+      (CTerm (BoolLit (b, (pos, t))), CEqc (getTEnv env, t, CTyp TyBool, pos) :: cs)
     | cgExpr (env, PT (Op (bop, pos)), t, cs) =
-      (CTerm (Op (bop, (pos, t))), CEqc (tcop bop, t, pos) :: cs)
+      (CTerm (Op (bop, (pos, t))), CEqc (getTEnv env, tcop bop, t, pos) :: cs)
     | cgExpr (env, PT (Let (ds, e, pos)), t, cs) =
       let val (envL, dsC, cs') = cgDecs (env, ds, cs)
           val (eC, csr) = cgExpr (envL, e, t, cs')
@@ -206,7 +208,7 @@ struct
                                            | NONE => raise Fatal (VarUndef (c, pos))))
                   val (ft, bds)  = bindArgs (pos, args, tc)
                   val (eb', cs') = cgExpr (env withLV List.revAppend (map (fn (x, ts) => (x, (ts, BVar))) bds, #lvar env), eb, t, cs)
-              in (((c, bds), eb') :: ralts , CEqc (ft, te, pos) :: cs')
+              in (((c, bds), eb') :: ralts , CEqc (getTEnv env, ft, te, pos) :: cs')
               end
           val (ralts, cs2) = foldl hAlt ([], cs1) alts
       in (CTerm (Case (e', rev ralts, (pos, t))), cs2)
@@ -214,7 +216,7 @@ struct
     | cgExpr (env, PAnn (e, pt, pos), t, cs) =
       let val at = kindCheck (#lty env @ map flip (#gty env), pos, pt, KTyp)
           val (e', cs') = cgExpr (env, e, t, cs)
-      in  (e', CEqc (t, at, pos) :: cs')
+      in  (e', CEqc (getTEnv env, t, at, pos) :: cs')
       end
     | cgExpr (env, PHole pos, t, cs) =
       (CHole (pos, (#lty env, #lvar env), t), cs)
@@ -401,35 +403,35 @@ struct
     | pickCanon (CTyp t1, CTyp t2) = raise Impossible
 
   local
-      fun getPos (CEqc (_, _, pos)) = pos
+      fun getPos (CEqc (_, _, _, pos)) = pos
   in
-  fun fsimpl (TyArr (t1, t2),  TyArr (s1, s2),  c, pr) =
-      pend (CEqc (t1, s1, getPos c), c) (pend (CEqc (t2, s2, getPos c), c) pr)
-    | fsimpl (TyProd (t1, t2), TyProd (s1, s2), c, pr) =
-      pend (CEqc (t1, s1, getPos c), c) (pend (CEqc (t2, s2, getPos c), c) pr)
-    | fsimpl (TyApp (t1, t2), TyApp (s1, s2), c, pr) =
-      pend (CEqc (t1, s1, getPos c), c) (pend (CEqc (t2, s2, getPos c), c) pr)
-    | fsimpl (TyInt,  TyInt,  c, pr) = pr
-    | fsimpl (TyBool, TyBool, c, pr) = pr
-    | fsimpl (t1 as TyVar n1, t2 as TyVar n2, c, pr) =
+  fun fsimpl (TyArr (t1, t2),  TyArr (s1, s2),  D, c, pr) =
+      pend (CEqc (D, t1, s1, getPos c), c) (pend (CEqc (D, t2, s2, getPos c), c) pr)
+    | fsimpl (TyProd (t1, t2), TyProd (s1, s2), D, c, pr) =
+      pend (CEqc (D, t1, s1, getPos c), c) (pend (CEqc (D, t2, s2, getPos c), c) pr)
+    | fsimpl (TyApp (t1, t2), TyApp (s1, s2),   D, c, pr) =
+      pend (CEqc (D, t1, s1, getPos c), c) (pend (CEqc (D, t2, s2, getPos c), c) pr)
+    | fsimpl (TyInt,  TyInt,  D, c, pr) = pr
+    | fsimpl (TyBool, TyBool, D, c, pr) = pr
+    | fsimpl (t1 as TyVar n1, t2 as TyVar n2, D, c, pr) =
       if n1 = n2 then pr else res (StructDiff (CTyp t1, CTyp t2, c)) pr
-    | fsimpl (t1, t2, c, pr) = res (StructDiff (CTyp t1, CTyp t2, c)) pr
+    | fsimpl (t1, t2, D, c, pr) = res (StructDiff (CTyp t1, CTyp t2, c)) pr
   end
 
-  fun csimpl (CTyUVar n, CTyUVar m, c, pr) =
+  fun csimpl (CTyUVar n, CTyUVar m, D, c, pr) =
       pr before UF.union pickCanon (getSet n) (getSet m)
-    | csimpl (t1 as CTyUVar n, t2, c, pr) =
+    | csimpl (t1 as CTyUVar n, t2, D, c, pr) =
       if occursUVar (t2, n) then res (Circular (n, t2, c)) pr
       else (pr before UF.union pickCanon (getSet n) (UF.new t2))
-    | csimpl (t1, t2 as CTyUVar n, c, pr) =
+    | csimpl (t1, t2 as CTyUVar n, D, c, pr) =
       if occursUVar (t1, n) then res (Circular (n, t1, c)) pr
       else (pr before UF.union pickCanon (UF.new t1) (getSet n))
-    | csimpl (CTyp t1, CTyp t2, c, pr) =
-      fsimpl (t1, t2, c, pr)
+    | csimpl (CTyp t1, CTyp t2, D, c, pr) =
+      fsimpl (t1, t2, D, c, pr)
 
   fun simplify constrs =
       let fun aux ([], res) = res
-            | aux ((CEqc (t1, t2, pos), r) :: pend, res) = aux (csimpl (force t1, force t2, r, (pend, res)))
+            | aux ((CEqc (D, t1, t2, pos), r) :: pend, res) = aux (csimpl (force t1, force t2, D, r, (pend, res)))
       in (reset (); aux (constrs, []))
       end
 
@@ -572,8 +574,8 @@ struct
 
   datatype error = EVarUndefined  of var * pos
                  | ETVarUndefined of tname * pos
-                 | ECircularDep   of int * cgTyp * cgTyp * cgTyp * pos
-                 | EStructDiff    of cgTyp * cgTyp * cgTyp * cgTyp * pos
+                 | ECircularDep   of cgTContext * int * cgTyp * cgTyp * cgTyp * pos
+                 | EStructDiff    of cgTContext * cgTyp * cgTyp * cgTyp * cgTyp * pos
                  | EEscapedMonos  of int list * tyS * pos
                  | EOther         of string * pos
 
@@ -585,10 +587,10 @@ struct
           fun docg (VarUndef  (x, pos)) = EVarUndefined  (x, pos)
             | docg (TVarUndef (a, pos)) = ETVarUndefined (a, pos)
             | docg (Other     (s, pos)) = EOther         (s, pos)
-          fun dotc s (StructDiff (t1, t2, CEqc (st1, st2, pos))) =
-              EStructDiff (substC (s, t1), substC (s, t2), substC (s, st1), substC (s, st2), pos)
-            | dotc s (Circular (n, t, CEqc (st1, st2, pos))) =
-              ECircularDep (n, t, substC (s, st1), substC (s, st2), pos)
+          fun dotc s (StructDiff (t1, t2, CEqc (D, st1, st2, pos))) =
+              EStructDiff (D, substC (s, t1), substC (s, t2), substC (s, st1), substC (s, st2), pos)
+            | dotc s (Circular (n, t, CEqc (D, st1, st2, pos))) =
+              ECircularDep (D, n, t, substC (s, st1), substC (s, st2), pos)
       in Sum.INL (map docg cgErrs @ map (dotc subst) tyErrs)
       end
 

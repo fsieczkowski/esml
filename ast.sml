@@ -130,7 +130,7 @@ struct
   withtype cgAlt  = cgPat * cgTerm
 
 
-  datatype constr = CEqc of cgTyp * cgTyp * pos
+  datatype constr = CEqc of cgTContext * cgTyp * cgTyp * pos
 
   fun ppuvar n = "?X" ^ Int.toString n
   fun ppty D ty =
@@ -155,7 +155,7 @@ struct
       in tc ^ aux 1 t
       end
 
-  fun ppconstr (CEqc (t1, t2, pos)) = ppty [] t1 ^ " ~ " ^ ppty [] t2 ^ " @ " ^ Pos.toString pos ^ "\n"
+  fun ppconstr (CEqc (D, t1, t2, pos)) = ppty D t1 ^ " ~ " ^ ppty D t2 ^ " @ " ^ Pos.toString pos ^ "\n"
 
 end
 

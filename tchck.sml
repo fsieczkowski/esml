@@ -289,20 +289,20 @@ struct
       in  aux (ds, env, [], cs)
       end
 
-  fun reset () = (uvcntr := 0; errors := [])
-  fun restart () = (tvcntr := 0; reset ())
+  fun reset () = errors := []
+  fun restart () = (tvcntr := 0; uvcntr := 0; reset ())
 
   fun genConstrExpr (E, e) =
-      ((*reset (); *) cgExpr (mkEnv (E, ([], [])), e, newUVar (), []))
+      (reset (); cgExpr (mkEnv (E, ([], [])), e, newUVar (), []))
 
   fun genConstrDec (E, d) =
-      let (*val _ = reset ()*)
+      let val _ = reset ()
           val (_, d, cs) = cgDec (mkEnv (E, ([], [])), d, [])
       in (d, cs)
       end
 
   fun genConstrDecs (E, ds) =
-      let (*val _ = reset ()*)
+      let val _ = reset ()
           val (_, ds, cs) = cgDecs (mkEnv (E, ([], [])), ds, [])
       in (ds, cs)
       end
@@ -331,10 +331,7 @@ struct
 
   in
   fun genConstrFrom (E, (D, G), t, e) =
-      let (* val _ = reset ()
-          val DC = map flip D
-          val GC = map (fn (x, (ts, d)) => (x, (trInstTyS ts, d))) G
-          val tc = trInstTy t*)
+      let val _ = reset ()
       in cgExpr (mkEnv (E, (D, G)), e, t, [])
       end
   end

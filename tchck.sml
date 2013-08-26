@@ -1,7 +1,7 @@
 structure ConstrGen :
 sig
 
-    datatype 'ed err = VarUndef of CGAst.var * 'ed | TVarUndef of CGAst.tname * 'ed
+    datatype 'ed err = VarUndef of CGAst.var * 'ed | TVarUndef of CGAst.tname * 'ed | Other of string * 'ed
     val genConstrExpr : TAst.env * PAst.pTerm -> CGAst.cgTerm * CGAst.constr list
     val genConstrDec  : TAst.env * PAst.pDec  -> CGAst.cgDec  * CGAst.constr list
     val genConstrFrom : TAst.env * TAst.env * TAst.typ * PAst.pTerm ->
@@ -9,6 +9,8 @@ sig
     val getErrors : unit -> PAst.pos err list
     val toString : CGAst.pos -> string
     val restart  : unit -> unit
+    exception Fatal of PAst.pos err
+
 end =
 struct
 
@@ -32,8 +34,10 @@ struct
       in  n before tvcntr := n + 1
       end
 
-  datatype 'ed err = VarUndef of var * 'ed | TVarUndef of tname * 'ed
+  datatype 'ed err = VarUndef of var * 'ed | TVarUndef of tname * 'ed | Other of string * 'ed
   val errors = ref [] : pos err list ref
+
+  exception Fatal of PAst.pos err
 
   fun tcop bop =
       let val arr  = CTyp o TyArr
@@ -77,8 +81,8 @@ struct
                        " applied to " ^ ppty D t2' ^ " : " ^ ppknd ka ^ "."
       in case kf of
              KArr (karg, kres) => if karg = ka then (CTyp (TyApp (t1', t2')), KTyp)
-                                  else raise Fail errstr
-           | _ => raise Fail errstr
+                                  else raise Fatal (Other (errstr, pos))
+           | _ => raise Fatal (Other (errstr, pos))
       end
     | kindSynth (D, pos, PTyp TyInt)  = (CTyp TyInt, KTyp)
     | kindSynth (D, pos, PTyp TyBool) = (CTyp TyBool, KTyp)
@@ -90,16 +94,17 @@ struct
   and kindCheck (D, pos, pty, k) =
       let val (cty, k') = kindSynth (D, pos, pty)
       in  if k = k' then cty
-          else raise Fail ("Kind mismatch in type '" ^ ppty D cty ^ "' : " ^ ppknd k' ^
-                           " does not match the expected " ^ ppknd k ^ ".")
+          else raise Fatal (Other ("Kind mismatch in type '" ^ ppty D cty ^ "' : " ^ ppknd k' ^
+                                   " does not match the expected " ^ ppknd k ^ ".", pos))
       end
 
-  fun ctorCheck (D, tv, CTyp (TyArr (_, t))) = ctorCheck (D, tv, t)
-    | ctorCheck (D, tv, CTyp (TyApp (t, _))) = ctorCheck (D, tv, t)
-    | ctorCheck (D, tv, CTyp (TyVar tv'))    =
+  fun ctorCheck (D, pos, tv, CTyp (TyArr (_, t))) = ctorCheck (D, pos, tv, t)
+    | ctorCheck (D, pos, tv, CTyp (TyApp (t, _))) = ctorCheck (D, pos, tv, t)
+    | ctorCheck (D, pos, tv, CTyp (TyVar tv'))    =
       if tv = tv' then ()
-      else raise Fail ("Couldn't match " ^ ppty D (CTyp (TyVar tv)) ^ " against " ^ ppty D (CTyp (TyVar tv')) ^ ".")
-    | ctorCheck _ =  raise Fail "Constructor does not end in a variable or type application"
+      else raise Fatal (Other ("Couldn't match " ^ ppty D (CTyp (TyVar tv)) ^ " against " ^
+                               ppty D (CTyp (TyVar tv')) ^ ".", pos))
+    | ctorCheck (D, pos, tv, _) =  raise Fatal (Other ("Constructor does not end in a variable or type application", pos))
 
   fun instTy (targs, ty) =
       let val subst = map (fn (_, (tv, _)) => (tv, newUVar ())) targs
@@ -116,13 +121,13 @@ struct
   fun instTyS (CSMono t)  = t
     | instTyS (CSPoly ts) = instTy ts
 
-  fun bindArgs (args, ty) =
+  fun bindArgs (pos, args, ty) =
       let fun nArr (CTyp (TyArr _)) = false
             | nArr _ = true
           fun aux ([], ty, acc) = if nArr ty then (ty, rev acc)
-                                  else raise Fail "Constructor not fully applied"
+                                  else raise Fatal (Other ("Constructor not fully applied", pos))
             | aux (a :: args, CTyp (TyArr (t1, t2)), acc) = aux (args, t2, (a, CSMono t1) :: acc)
-            | aux _ = raise Fail "Constructor applied to too many arguments"
+            | aux _ = raise Fatal (Other ("Constructor applied to too many arguments", pos))
       in aux (args, ty, [])
       end
 
@@ -153,7 +158,7 @@ struct
            SOME (tyS, _) => (CTerm (Var (x, (pos, t))), CEqc (instTyS tyS, t, pos) :: cs)
          | NONE => (case lookup (#gvar env, x) of
                         SOME (ttS, _) => (CTerm (Var (x, (pos, t))), CEqc (instTyS (trTySNM ttS), t, pos) :: cs)
-                      | NONE => raise NotFound))
+                      | NONE => (errors := VarUndef (x, pos) :: !errors; (CTerm (Var (x, (pos, t))), cs))))
     | cgExpr (env, PT (Abs (x, e, pos)), t, cs) =
       let val (targ, tres) = (newUVar (), newUVar ())
           val (e', rcs) = cgExpr (env withLV (x, (CSMono targ, BVar)) :: #lvar env, e, tres, cs)
@@ -204,12 +209,12 @@ struct
           fun hAlt (((c, args), eb), (ralts, cs)) =
               let val tc = (case lookup (#lvar env, c) of
                                 SOME (tS, Ctor) => instTyS tS
-                              | SOME (_,  BVar) => raise Fail "Not a constructor"
+                              | SOME (_,  BVar) => raise Fatal (Other (c ^ " is not a constructor.\n", pos))
                               | NONE => (case lookup (#gvar env, c) of
                                              SOME (ttS, Ctor) => instTyS (trTySNM ttS)
-                                           | SOME (_,   BVar) => raise Fail "Not a constructor"
-                                           | NONE => raise NotFound))
-                  val (ft, bds)  = bindArgs (args, tc)
+                                           | SOME (_,   BVar) => raise Fatal (Other (c ^ " is not a constructor.\n", pos))
+                                           | NONE => raise Fatal (VarUndef (c, pos))))
+                  val (ft, bds)  = bindArgs (pos, args, tc)
                   val (eb', cs') = cgExpr (env withLV List.revAppend (map (fn (x, ts) => (x, (ts, BVar))) bds, #lvar env), eb, t, cs)
               in (((c, bds), eb') :: ralts , CEqc (ft, te, pos) :: cs')
               end
@@ -268,7 +273,7 @@ struct
             let val tvs = map (fn tn => (tn, (newTVar (), KTyp))) tns
                 val DC = List.revAppend (tvs, D)
                 val tres = kindCheck (DC @ map flip (#gty env), pos, ty, KTyp)
-                val _ = ctorCheck (DC, tv, tres)
+                val _ = ctorCheck (DC, pos, tv, tres)
             in ((v, tvs, tres) :: cs, (v, CSPoly (tvs, tres)) :: cts)
             end
         (* Handle one (of possibly several mutually recursive) declaration:
@@ -296,7 +301,7 @@ struct
   fun restart () = (tvcntr := 0; reset ())
 
   fun genConstrExpr (E, e) =
-       cgExpr (mkEnv (E, ([], [])), e, newUVar (), []) before reset ()
+      (reset (); cgExpr (mkEnv (E, ([], [])), e, newUVar (), []))
 
   fun genConstrDec (E, d) =
       let val _ = reset ()
@@ -334,10 +339,11 @@ struct
 
   in
   fun genConstrFrom (E, (D, G), t, e) =
-      let val DC = map flip D
+      let val _ = reset ()
+          val DC = map flip D
           val GC = map (fn (x, (ts, d)) => (x, (trInstTyS ts, d))) G
           val tc = trInstTy t
-      in cgExpr (mkEnv (E, (DC, GC)), e, tc, []) before reset ()
+      in cgExpr (mkEnv (E, (DC, GC)), e, tc, [])
       end
   end
 
@@ -580,6 +586,7 @@ struct
                  | ECircularDep   of int * cgTyp * cgTyp * cgTyp * pos
                  | EStructDiff    of cgTyp * cgTyp * cgTyp * cgTyp * pos
                  | EEscapedMonos  of int list * tyS * pos
+                 | EOther         of string * pos
 
   fun reportMS xs = Sum.INL (map EEscapedMonos xs)
 
@@ -588,6 +595,7 @@ struct
           open CSolver
           fun docg (VarUndef  (x, pos)) = EVarUndefined  (x, pos)
             | docg (TVarUndef (a, pos)) = ETVarUndefined (a, pos)
+            | docg (Other     (s, pos)) = EOther         (s, pos)
           fun dotc s (StructDiff (t1, t2, CEqc (st1, st2, pos))) =
               EStructDiff (substC (s, t1), substC (s, t2), substC (s, st1), substC (s, st2), pos)
             | dotc s (Circular (n, t, CEqc (st1, st2, pos))) =
@@ -608,7 +616,7 @@ struct
                  else reportMS [(ms, SMono ty, pos)]
               end
          else reportErrors (cgErrs, residual, sub)
-      end
+      end handle ConstrGen.Fatal err => reportErrors ([err], [], [])
 
   fun tcDec (E, d) =
       let val (d', cs) = ConstrGen.genConstrDec (E, d)
@@ -622,7 +630,7 @@ struct
                  else reportMS errs
               end
          else reportErrors (cgErrs, residual, sub)
-      end
+      end handle ConstrGen.Fatal err => reportErrors ([err], [], [])
 
   fun tcDecs (E, ds) =
       let open Sum
@@ -632,7 +640,7 @@ struct
                    INL err => INL err
                  | INR d'  => INR (d' :: ds, extWith (E, d')))
       in foldl hD (INR ([], E)) ds
-      end
+      end handle ConstrGen.Fatal err => reportErrors ([err], [], [])
 
   fun refineExpr (E, env, t, e) =
       let val (e', cs) = ConstrGen.genConstrFrom (E, env, t, e)
@@ -647,6 +655,6 @@ struct
                  else reportMS [(ms, SMono ty, pos)]
               end
          else reportErrors (cgErrs, residual, sub)
-      end
+      end handle ConstrGen.Fatal err => reportErrors ([err], [], [])
       
 end

@@ -1,9 +1,10 @@
 structure Top =
 struct
 
-  local
       val holes = ref [] : TAst.hole ref list ref
       val env   = ref ([], []) : TAst.env ref
+
+  local
 
       fun eval e = e
       open TypeChecker
@@ -37,6 +38,7 @@ struct
           Pos.toString pos ^ " Type error: circular dependency.\nType: "
           ^ CGAst.ppuvar n ^ " occurs in " ^ CGAst.ppty [] t ^ " arising from the following equation.\nExpected: "
           ^ CGAst.ppty [] st1 ^ "\nActual: " ^ CGAst.ppty [] st2 ^ "\n"
+        | showErr (EOther (s, pos)) = Pos.toString pos ^ " " ^ s
       open Sum
   in
 
@@ -158,7 +160,7 @@ struct
                     | aux (_, acc) = acc
               in aux (ts, 0)
               end
-          val narr = (case lookup (G, id) of
+          val narr = (case lookup (G @ #2 env, id) of
                           SOME (TAst.SPoly (_, t), _) => countArrs t
                         | SOME (TAst.SMono t, _) => countArrs t
                         | NONE => raise Err before print ("Undeclared identifier " ^ id ^ "\n"))

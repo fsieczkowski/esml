@@ -4,7 +4,7 @@ sig
     datatype 'ed err = VarUndef of CGAst.var * 'ed | TVarUndef of CGAst.tname * 'ed | Other of string * 'ed
     val genConstrExpr : TAst.env * PAst.pTerm -> CGAst.cgTerm * CGAst.constr list
     val genConstrDec  : TAst.env * PAst.pDec  -> CGAst.cgDec  * CGAst.constr list
-    val genConstrFrom : TAst.env * TAst.env * TAst.typ * PAst.pTerm ->
+    val genConstrFrom : TAst.env * CGAst.cgEnv * CGAst.cgTyp * PAst.pTerm ->
                         CGAst.cgTerm * CGAst.constr list
     val getErrors : unit -> PAst.pos err list
     val toString : CGAst.pos -> string
@@ -133,16 +133,6 @@ struct
 
   val toString = Pos.toString
 
-  fun trTypNM (TAst.TyMono k) = raise Impossible
-    | trTypNM (TAst.TyF (TyArr  (t1, t2))) = CTyp (TyArr  (trTypNM t1, trTypNM t2))
-    | trTypNM (TAst.TyF (TyProd (t1, t2))) = CTyp (TyProd (trTypNM t1, trTypNM t2))
-    | trTypNM (TAst.TyF (TyApp  (t1, t2))) = CTyp (TyApp  (trTypNM t1, trTypNM t2))
-    | trTypNM (TAst.TyF (TyVar tv)) = CTyp (TyVar tv)
-    | trTypNM (TAst.TyF TyBool)     = CTyp TyBool
-    | trTypNM (TAst.TyF TyInt)      = CTyp TyInt
-  fun trTySNM (TAst.SPoly (bs, t)) = CSPoly (map flip bs, trTypNM t)
-    | trTySNM (TAst.SMono t)       = CSMono (trTypNM t)
-
   (* Environments for constraint generation *)
   type env = {lty : cgTContext, gty : TAst.tycontext, lvar : cgContext, gvar : TAst.context}
 
@@ -157,7 +147,7 @@ struct
       (case lookup (#lvar env, x) of
            SOME (tyS, _) => (CTerm (Var (x, (pos, t))), CEqc (instTyS tyS, t, pos) :: cs)
          | NONE => (case lookup (#gvar env, x) of
-                        SOME (ttS, _) => (CTerm (Var (x, (pos, t))), CEqc (instTyS (trTySNM ttS), t, pos) :: cs)
+                        SOME (ttS, _) => (CTerm (Var (x, (pos, t))), CEqc (instTyS (TAst.trTySNM ttS), t, pos) :: cs)
                       | NONE => (errors := VarUndef (x, pos) :: !errors; (CTerm (Var (x, (pos, t))), cs))))
     | cgExpr (env, PT (Abs (x, e, pos)), t, cs) =
       let val (targ, tres) = (newUVar (), newUVar ())
@@ -211,7 +201,7 @@ struct
                                 SOME (tS, Ctor) => instTyS tS
                               | SOME (_,  BVar) => raise Fatal (Other (c ^ " is not a constructor.\n", pos))
                               | NONE => (case lookup (#gvar env, c) of
-                                             SOME (ttS, Ctor) => instTyS (trTySNM ttS)
+                                             SOME (ttS, Ctor) => instTyS (TAst.trTySNM ttS)
                                            | SOME (_,   BVar) => raise Fatal (Other (c ^ " is not a constructor.\n", pos))
                                            | NONE => raise Fatal (VarUndef (c, pos))))
                   val (ft, bds)  = bindArgs (pos, args, tc)
@@ -227,7 +217,7 @@ struct
       in  (e', CEqc (t, at, pos) :: cs')
       end
     | cgExpr (env, PHole pos, t, cs) =
-      (CHole (pos, (#gty env, #gvar env), (#lty env, #lvar env), t), cs)
+      (CHole (pos, (#lty env, #lvar env), t), cs)
 
   and cgDec (env, PD (Fun defs), cs) =
       let fun hArg (arg, (tas, tr)) =
@@ -301,16 +291,16 @@ struct
   fun restart () = (tvcntr := 0; reset ())
 
   fun genConstrExpr (E, e) =
-      (reset (); cgExpr (mkEnv (E, ([], [])), e, newUVar (), []))
+      ((*reset (); *) cgExpr (mkEnv (E, ([], [])), e, newUVar (), []))
 
   fun genConstrDec (E, d) =
-      let val _ = reset ()
+      let (*val _ = reset ()*)
           val (_, d, cs) = cgDec (mkEnv (E, ([], [])), d, [])
       in (d, cs)
       end
 
   fun genConstrDecs (E, ds) =
-      let val _ = reset ()
+      let (*val _ = reset ()*)
           val (_, ds, cs) = cgDecs (mkEnv (E, ([], [])), ds, [])
       in (ds, cs)
       end
@@ -339,11 +329,11 @@ struct
 
   in
   fun genConstrFrom (E, (D, G), t, e) =
-      let val _ = reset ()
+      let (* val _ = reset ()
           val DC = map flip D
           val GC = map (fn (x, (ts, d)) => (x, (trInstTyS ts, d))) G
-          val tc = trInstTy t
-      in cgExpr (mkEnv (E, (DC, GC)), e, tc, [])
+          val tc = trInstTy t*)
+      in cgExpr (mkEnv (E, (D, G)), e, t, [])
       end
   end
 
@@ -463,6 +453,9 @@ struct
                                        SOME tr => tr
                                      | NONE => t)
 
+  fun substSC (s, CSMono t) = CSMono (substC (s, t))
+    | substSC (s, CSPoly (b, t)) = CSPoly (b, substC (s, t))
+
   local
       val monocntr = ref 0
       val monoSub = ref [] : (int * int) list ref
@@ -503,57 +496,53 @@ struct
   fun substS (s, CSPoly (tvs, ty)) = SPoly (map flip tvs, subst (s, ty))
     | substS (s, CSMono ty) = SMono (subst (s, ty))
 
-  fun trExpr (sub, CTerm (Var (x, (pos, ty)))) =
+  fun trExpr (env, sub, CTerm (Var (x, (pos, ty)))) =
       TmF (Var (x, (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (Abs ((x, targ), e, (pos, ty)))) =
-      TmF (Abs ((x, subst (sub, targ)), trExpr (sub, e), (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (App (e1, e2, (pos, ty)))) =
-      TmF (App (trExpr (sub, e1), trExpr (sub, e2), (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (Pair (e1, e2, (pos, ty)))) =
-      TmF (Pair (trExpr (sub, e1), trExpr (sub, e2), (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (Proj1 (e, (pos, ty)))) =
-      TmF (Proj1 (trExpr (sub, e), (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (Proj2 (e, (pos, ty)))) =
-      TmF (Proj2 (trExpr (sub, e), (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (IntLit  (n, (pos, ty)))) =
+    | trExpr (env, sub, CTerm (Abs ((x, targ), e, (pos, ty)))) =
+      TmF (Abs ((x, subst (sub, targ)), trExpr (env, sub, e), (pos, subst (sub, ty))))
+    | trExpr (env, sub, CTerm (App (e1, e2, (pos, ty)))) =
+      TmF (App (trExpr (env, sub, e1), trExpr (env, sub, e2), (pos, subst (sub, ty))))
+    | trExpr (env, sub, CTerm (Pair (e1, e2, (pos, ty)))) =
+      TmF (Pair (trExpr (env, sub, e1), trExpr (env, sub, e2), (pos, subst (sub, ty))))
+    | trExpr (env, sub, CTerm (Proj1 (e, (pos, ty)))) =
+      TmF (Proj1 (trExpr (env, sub, e), (pos, subst (sub, ty))))
+    | trExpr (env, sub, CTerm (Proj2 (e, (pos, ty)))) =
+      TmF (Proj2 (trExpr (env, sub, e), (pos, subst (sub, ty))))
+    | trExpr (env, sub, CTerm (IntLit  (n, (pos, ty)))) =
       TmF (IntLit  (n, (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (BoolLit (n, (pos, ty)))) =
+    | trExpr (env, sub, CTerm (BoolLit (n, (pos, ty)))) =
       TmF (BoolLit (n, (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (Op (bop, (pos, ty)))) =
+    | trExpr (env, sub, CTerm (Op (bop, (pos, ty)))) =
       TmF (Op (bop, (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (Let (ds, e, (pos, ty)))) =
-      TmF (Let (trDecs (sub, ds), trExpr (sub, e), (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (If (e1, e2, e3, (pos, ty)))) =
-      TmF (If (trExpr (sub, e1), trExpr (sub, e2), trExpr (sub, e3), (pos, subst (sub, ty))))
-    | trExpr (sub, CTerm (Case (e, alts, (pos, ty)))) =
-      TmF (Case (trExpr (sub, e), map (fn a => trAlt (sub, a)) alts, (pos, subst (sub, ty))))
-    | trExpr (sub, CHole (pos, env, (D, G), t)) =
-      (* This'll probably have to become smarter *)
-      let val ntys = (map flip D,
-                      map (fn (x, (tys, d)) => (x, (substS (sub, tys), d))) G,
-                      subst (sub, t))
-      in  THole (ref (Open (pos, env, ntys)))
-      end
+    | trExpr (env, sub, CTerm (Let (ds, e, (pos, ty)))) =
+      TmF (Let (trDecs (env, sub, ds), trExpr (env, sub, e), (pos, subst (sub, ty))))
+    | trExpr (env, sub, CTerm (If (e1, e2, e3, (pos, ty)))) =
+      TmF (If (trExpr (env, sub, e1), trExpr (env, sub, e2), trExpr (env, sub, e3), (pos, subst (sub, ty))))
+    | trExpr (env, sub, CTerm (Case (e, alts, (pos, ty)))) =
+      TmF (Case (trExpr (env, sub, e), map (fn a => trAlt (env, sub, a)) alts, (pos, subst (sub, ty))))
+    | trExpr (env, sub, CHole (pos, (D, G), t)) =
+      THole (ref (Open (env, ((D, map (fn (x, (t, b)) => (x, (substSC (sub, t), b))) G), substC (sub, t)),
+                        (pos, subst (sub, t)))))
 
-  and trAlt (sub, ((c, bds), expr)) =
-      ((c, map (fn (v, ts) => (v, substS (sub, ts))) bds), trExpr (sub, expr))
+  and trAlt (env, sub, ((c, bds), expr)) =
+      ((c, map (fn (v, ts) => (v, substS (sub, ts))) bds), trExpr (env, sub, expr))
 
-  and trDec (sub, CDec (Fun  ds)) =
+  and trDec (env, sub, CDec (Fun  ds)) =
       DF (Fun (map (fn (x, args, e, (pos, tyS)) =>
                        (x, map (fn (x, ty) => (x, subst (sub, ty))) args,
-                        trExpr (sub, e), (pos, substS (sub, tyS)))) ds))
-    | trDec (sub, CDec (PFun ds)) =
+                        trExpr (env, sub, e), (pos, substS (sub, tyS)))) ds))
+    | trDec (env, sub, CDec (PFun ds)) =
       DF (PFun (map (fn (x, targs, args, ty, e, (pos, tyS)) =>
                         (x, map flip targs, map (fn (x, ty) => (x, subst (sub, ty))) args,
-                         subst (sub, ty), trExpr (sub, e), (pos, substS (sub, tyS)))) ds))
-    | trDec (sub, CDec (Data ds)) =
+                         subst (sub, ty), trExpr (env, sub, e), (pos, substS (sub, tyS)))) ds))
+    | trDec (env, sub, CDec (Data ds)) =
       let fun hCtor (x, tvs, ty)  = (x, map flip tvs, subst (sub, ty))
           fun hCTyp (x, tyS)      = (x, substS (sub, tyS))
           fun hData (tv, k, cs, (p, cts)) = (flip tv, k, map hCtor cs, (p, map hCTyp cts))
       in DF (Data (map hData ds))
       end
 
-  and trDecs (sub, ds) = map (fn d => trDec (sub, d)) ds
+  and trDecs (env, sub, ds) = map (fn d => trDec (env, sub, d)) ds
 
   end      
 
@@ -609,7 +598,7 @@ struct
           val residual = CSolver.simplify (map (fn x => (x, x)) cs)
           val sub      = CSolver.getSubst ()
       in if null cgErrs andalso null residual
-         then let val e'' = trExpr (sub, e')
+         then let val e'' = trExpr (E, sub, e')
                   val (pos, ty) = TAst.annE e''
                   val ms = getMonos ty
               in if null ms then Sum.INR e''
@@ -624,7 +613,7 @@ struct
           val residual = CSolver.simplify (map (fn x => (x, x)) cs)
           val sub      = CSolver.getSubst ()
       in if null cgErrs andalso null residual
-         then let val d''  = trDec (sub, d')
+         then let val d''  = trDec (E, sub, d')
                   val errs = monErrs d''
               in if null errs then Sum.INR d''
                  else reportMS errs
@@ -648,10 +637,10 @@ struct
           val residual = CSolver.simplify (map (fn x => (x, x)) cs)
           val sub      = CSolver.getSubst ()
       in if null cgErrs andalso null residual
-         then let val e'' = trExpr (sub, e')
+         then let val e'' = trExpr (E, sub, e')
                   val (pos, ty) = TAst.annE e''
                   val ms = getMonos ty
-              in if null ms then Sum.INR e''
+              in if null ms then Sum.INR (e'', sub)
                  else reportMS [(ms, SMono ty, pos)]
               end
          else reportErrors (cgErrs, residual, sub)

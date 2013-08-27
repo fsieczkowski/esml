@@ -88,7 +88,7 @@ struct
     | kindSynth (D, pos, PTyp TyBool) = (CTyp TyBool, KTyp)
     | kindSynth (D, pos, PTyp (TyVar s)) =
       (case lookup (D, s) of
-           SOME (n, k) => (CTyp (TyVar n), k)
+           SOME (n, d) => (CTyp (TyVar n), kindOf d)
          | NONE => (newUVar (), KTyp) before errors := TVarUndef (s, pos) :: !errors)
 
   and kindCheck (D, pos, pty, k) =
@@ -107,7 +107,7 @@ struct
     | ctorCheck (D, pos, tv, _) =  raise Fatal (Other ("Constructor does not end in a variable or type application", pos))
 
   fun instTy (targs, ty) =
-      let val subst = map (fn (_, (tv, _)) => (tv, newUVar ())) targs
+      let val subst = map (fn (_, tv) => (tv, newUVar ())) targs
           fun aux (CTyp (TyArr  (t1, t2))) = (CTyp (TyArr  (aux t1, aux t2)))
             | aux (CTyp (TyProd (t1, t2))) = (CTyp (TyProd (aux t1, aux t2)))
             | aux (CTyp (TyApp  (t1, t2))) = (CTyp (TyApp  (aux t1, aux t2)))
@@ -244,8 +244,8 @@ struct
               end
           fun aux (G, [], cs) = (G, [], cs)
             | aux (G, (x, targs, vargs, tres, e, pos) :: ds, cs) =
-              let val targsC = map (fn x => (x, (newTVar (), KTyp))) targs
-                  val DC = List.revAppend (targsC, #lty env)
+              let val targsC = map (fn x => (x, newTVar ())) targs
+                  val DC = List.revAppend (map (fn (x, t) => (x, (t, DPoly))) targsC, #lty env)
                   val tresC = kindCheck (DC @ map flip (#gty env), pos, tres, KTyp)
                   val (vargsC, tyC) = foldr (hArg (DC, pos)) ([], tresC) vargs
                   val (GR, ds', cs') = aux ((x, (CSPoly (targsC, tyC), BVar)) :: G, ds, cs)
@@ -257,13 +257,13 @@ struct
       end
     | cgDec (env, PD (Data ds), cs) =
     let (* First, gather the names and kinds of datatypes, and generate tyvars for them *)
-        val tyks = map (fn (tn, k, _, _) => (tn, (newTVar (), k))) ds
+        val tyks = map (fn (tn, k, cs, _) => (tn, (newTVar (), DData (k, map (fn (v, _, _) => v) cs)))) ds
         val DR = List.revAppend (tyks, #lty env)
         (* Handle a constructor: generate tyvars for polymorphic values,
          * check that the kind works out, and add it to the environment. *)
         fun hCon tv D pos ((v, tns, ty), (cs, cts)) =
-            let val tvs = map (fn tn => (tn, (newTVar (), KTyp))) tns
-                val DC = List.revAppend (tvs, D)
+            let val tvs = map (fn tn => (tn, newTVar ())) tns
+                val DC = List.revAppend (map (fn (x, t) => (x, (t, DPoly))) tvs, D)
                 val tres = kindCheck (DC @ map flip (#gty env), pos, ty, KTyp)
                 val _ = ctorCheck (DC, pos, tv, tres)
             in ((v, tvs, tres) :: cs, (v, CSPoly (tvs, tres)) :: cts)
@@ -272,8 +272,8 @@ struct
          * get the tyvar associated with the type name earlier, handle the constructors
          * and generate the resulting environment. *)
         fun hDec D ((tn, k, cs, pos), (ds, G)) =
-            let val tv = valOf (lookup (tyks, tn))
-                val (rcs, rcts) = foldl (hCon (#1 tv) D pos) ([], []) cs
+            let val (tv, _) = valOf (lookup (tyks, tn))
+                val (rcs, rcts) = foldl (hCon tv D pos) ([], []) cs
             in (((tn, tv), k, rev rcs, (pos, rev rcts)) :: ds, map (fn (x, y) => (x, (y, Ctor))) rcts @ G)
             end
         val (dsr, GR) = foldl (hDec DR) ([], #lvar env) ds
@@ -326,7 +326,7 @@ struct
           in aux t
           end
 
-      fun trInstTyS (TAst.SPoly (bs, t)) = CSPoly (map flip bs, trInstTy t)
+      fun trInstTyS (TAst.SPoly (bs, t)) = CSPoly (map (fn (x, y) => (y, x)) bs, trInstTy t)
         | trInstTyS (TAst.SMono t)       = CSMono (trInstTy t)
 
   in
@@ -492,7 +492,7 @@ struct
            SOME tr => mkMono tr
          | NONE => mkMono t)
 
-  fun substS (s, CSPoly (tvs, ty)) = SPoly (map flip tvs, subst (s, ty))
+  fun substS (s, CSPoly (tvs, ty)) = SPoly (map (fn (x, y) => (y, x)) tvs, subst (s, ty))
     | substS (s, CSMono ty) = SMono (subst (s, ty))
 
   fun trExpr (env, sub, CTerm (Var (x, (pos, ty)))) =
@@ -532,12 +532,12 @@ struct
                         trExpr (env, sub, e), (pos, substS (sub, tyS)))) ds))
     | trDec (env, sub, CDec (PFun ds)) =
       DF (PFun (map (fn (x, targs, args, ty, e, (pos, tyS)) =>
-                        (x, map flip targs, map (fn (x, ty) => (x, subst (sub, ty))) args,
+                        (x, map (fn (x, y) => (y, x)) targs, map (fn (x, ty) => (x, subst (sub, ty))) args,
                          subst (sub, ty), trExpr (env, sub, e), (pos, substS (sub, tyS)))) ds))
     | trDec (env, sub, CDec (Data ds)) =
-      let fun hCtor (x, tvs, ty)  = (x, map flip tvs, subst (sub, ty))
+      let fun hCtor (x, tvs, ty)  = (x, map (fn (x, y) => (y, x)) tvs, subst (sub, ty))
           fun hCTyp (x, tyS)      = (x, substS (sub, tyS))
-          fun hData (tv, k, cs, (p, cts)) = (flip tv, k, map hCtor cs, (p, map hCTyp cts))
+          fun hData ((n, t), k, cs, (p, cts)) = ((t, n), k, map hCtor cs, (p, map hCTyp cts))
       in DF (Data (map hData ds))
       end
 

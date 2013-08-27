@@ -11,16 +11,17 @@ struct
       fun ppty t = TAst.ppty (#1 (!env), t)
       fun pptys s = TAst.pptys (#1 (!env), s)
       fun showVal e = "-exp-:" ^ (ppty o #2 o TAst.annE) e ^ "\n"
+      fun extData ((tv, tn), k, cs, _) = (tv, (tn, DData (k, map (fn (x, _, _) => x) cs)))
       fun showDec (D, TAst.DF (DTFunctors.Fun ds)) =
           concat (map (fn (x, _, _, (_, ts)) => "val " ^ x ^ " : " ^ TAst.pptys (D, ts) ^ "\n") ds)
         | showDec (D, TAst.DF (DTFunctors.PFun ds)) =
           concat (map (fn (x, _, _, _, _, (_, ts)) => "val " ^ x ^ " : " ^ TAst.pptys (D, ts) ^ "\n") ds)
         | showDec (D, TAst.DF (DTFunctors.Data ds)) =
           let fun pptargs [] = ""
-                | pptargs ts = "[" ^ String.concatWith " " (map (fn (_, (tn, _)) => tn) ts) ^ "] "
-              val D' = List.revAppend (map #1 ds, D)
-              fun ppcons (x, tvs, ty) = x ^ " : " ^ pptargs tvs ^ TAst.ppty (List.revAppend (tvs, D'), ty)
-              fun ppdec ((_, (tn, _)), k, cs, _) =
+                | pptargs ts = "[" ^ String.concatWith " " (map (fn (_, tn) => tn) ts) ^ "] "
+              val D' = List.revAppend (map extData ds, D)
+              fun ppcons (x, tvs, ty) = x ^ " : " ^ pptargs tvs ^ TAst.ppty (List.revAppend (map (fn (x, t) => (x, (t, DPoly))) tvs, D'), ty)
+              fun ppdec ((_, tn), k, cs, _) =
                   "datatype " ^ tn ^ " : " ^ ppknd k ^ " = " ^ String.concatWith " | " (map ppcons cs) ^ "\n"
           in concat (map ppdec ds)
           end
@@ -44,7 +45,7 @@ struct
 
   exception Err
 
-  fun appDec (d as DF (Data ds), D) = List.revAppend (List.map #1 ds, D) before print (showDec (D, d))
+  fun appDec (d as DF (Data ds), D) = List.revAppend (List.map extData ds, D) before print (showDec (D, d))
     | appDec (d, D) = D before print (showDec (D, d))
 
   fun getHolesE (THole hl) = (case !hl of

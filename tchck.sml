@@ -9,6 +9,7 @@ sig
     val getErrors : unit -> PAst.pos err list
     val toString : CGAst.pos -> string
     val restart  : unit -> unit
+    val newUVar  : unit -> CGAst.cgTyp
     exception Fatal of PAst.pos err
 
 end =

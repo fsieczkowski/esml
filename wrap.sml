@@ -2,7 +2,9 @@ structure Repl =
 struct
 
   datatype comm = ShowAll | ShowOne of int | Focus of int | Unfocus | Clear | Malformed |
-                  Load of string | Refine of int * string | Apply of int * string | Run of string
+                  Load of string | Refine of int * string | Apply of int * string | Run of string |
+                  Case of int * string
+
 
   val nh = ref 0
   val fh = ref NONE : int option ref
@@ -21,8 +23,10 @@ struct
     | exec (Load    s) = (Top.runFile s; nh := Top.numHoles ())
     | exec (Refine ns) =
       guardsz (#1 ns) (fn () => (nh := !nh + Top.refineHole ns - 1; fh := NONE) handle Err => ())
-    | exec (Apply ns)  =
+    | exec (Apply  ns) =
       guardsz (#1 ns) (fn () => (nh := !nh + Top.applyHole ns - 1; fh := NONE) handle Err => ())
+    | exec (Case   ns) =
+      guardsz (#1 ns) (fn () => (nh := !nh + Top.refineCase ns - 1; fh := NONE) handle Err => ())
     | exec (Run s)     = (Top.runReplExp s; nh := Top.numHoles ())
 
   fun parseInput s =
@@ -46,6 +50,9 @@ struct
           val unfocus = try (string ":unfocus" return Unfocus)
           val clear   = try (string ":clear" return Clear)
           val load    = try (string ":load") >> spaces >> str wth Load
+          val pmatch  = try (string ":case") >> spaces >>
+                            (if focused () then succeed (valOf (!fh)) else number << spaces)
+                            && rest wth Case
           val refine  = try (string ":refine") >> spaces >>
                             (if focused () then succeed (valOf (!fh)) else number << spaces)
                             && rest wth Refine
@@ -53,7 +60,7 @@ struct
                             (if focused () then succeed (valOf (!fh)) else number << spaces)
                             && rest wth Apply
           val expr    = rest wth Run
-          val all     = showall <|> showOne <|> focus <|> unfocus <|> load <|> refine <|> apply <|> expr
+          val all     = showall <|> showOne <|> focus <|> unfocus <|> load <|> refine <|> apply <|> pmatch <|> expr
       in case parseString (all << spaces << eos) s of
              INL errs => Malformed
            | INR cmd  => cmd

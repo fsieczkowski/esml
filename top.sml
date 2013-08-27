@@ -203,6 +203,75 @@ struct
 
   fun numHoles () = length (!holes)
 
+  local 
+
+      open DTFunctors
+      open TAst
+      val vcntr = ref 0
+      val dummyPos = Pos.pos (Coord.init "-") (Coord.init "-")
+      fun newVar () = let val n = !vcntr in "var" ^ Int.toString n before vcntr := n + 1 end
+      fun splitT (TyF (TyApp (t1, t2)), acc) = splitT (t1, t2 :: acc)
+        | splitT (TyF (TyVar x), acc) = (x, acc)
+        | splitT _ = raise Err before print "Expression's type is not a datatype"
+      fun stripArrs (TyF (TyArr (t1, t2)), acc) = stripArrs (t2, t1 :: acc)
+        | stripArrs (t, acc) = (t, acc)
+      fun subInst (sub, bds) (t as (TyF (TyVar v))) =
+          if List.exists (fn (tv, _) => v = tv) bds then
+              case lookup (sub, t) of
+                  SOME t => trTypNM t
+                | NONE   => ConstrGen.newUVar ()
+          else CTyp (TyVar v)
+        | subInst sb (TyF (TyArr  (t1, t2))) = CTyp (TyArr  (subInst sb t1, subInst sb t2))
+        | subInst sb (TyF (TyProd (t1, t2))) = CTyp (TyProd (subInst sb t1, subInst sb t2))
+        | subInst sb (TyF (TyApp  (t1, t2))) = CTyp (TyApp  (subInst sb t1, subInst sb t2))
+        | subInst sb (TyF TyInt)  = CTyp TyInt
+        | subInst sb (TyF TyBool) = CTyp TyBool
+        | subInst sb _ = raise Impossible
+
+  in
+  (* Fixme: lookup should go through D/G as well as env *)
+  fun buildCaseE (retT, e, env : TAst.env, (D, G)) =
+      let fun mkHole aG t = Open (env, ((D, aG @ G), trTypNM t), (dummyPos, t))
+          val (_, t) = TAst.annE e
+          val (v, ts) = splitT (t, [])
+          val cs = case lookup (List.map flip D @ #1 env, v) of
+                       SOME (_, DData (_, cs))  => cs
+                     | _ => raise Err before print "Expression's type is not a datatype"
+          fun doCon c =
+              let val ((ft, ats), bs) = (case #1 (valOf (lookup (#2 env, c))) of
+                                             SPoly (bs, t) => (stripArrs (t, []), bs)
+                                           | SMono t => (stripArrs (t, []), []))
+                  val (v', targs) = splitT (ft, [])
+                  val _ = if v' <> v then raise Impossible else ()
+                  val tsub = ListPair.zipEq (targs, ts)
+                  val rG = List.map (fn t => (newVar (), CSMono (subInst (tsub, bs) t))) ats
+              in  ((c, List.map (fn (x, ts) => (x, substS ([], ts))) (rev rG)),
+                   THole (ref (mkHole (List.map (fn (x, t) => (x, (t, BVar))) rG) retT)))
+              end
+      in  TmF (Case (e, List.map doCon cs, (dummyPos, retT)))
+      end
+  end
+
+  fun refineCase (n, s) =
+      let val (prev, h :: post) = Util.takeDrop (n, !holes)
+          val Open (env, ((D, G), t), (pos, rt)) = !h
+      in case Parser.parseExp s of
+             INL err => raise Err before print err
+           | INR e =>
+             (case TypeChecker.refineExpr (env, (D, G), ConstrGen.newUVar (), e) of
+                  INL errs => raise Err before app (print o showErr) errs
+                | INR (e', sub) =>
+                  let val re = buildCaseE (rt, e', env, (D, G))
+                  in (holes := [];
+                      getHolesE re;
+                      print ("Refining successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");
+                      h := Closed re;
+                      subHoles (sub, prev); subHoles (sub, post);
+                      length (!holes) before holes := prev @ !holes @ post)
+                  end)
+
+      end
+
   end
 
 end

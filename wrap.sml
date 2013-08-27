@@ -42,23 +42,17 @@ struct
           val rest    = repeat anyChar wth String.implode
           val str     = char #"\"" >> repeat (noneOf [#"\""]) << char #"\"" wth String.implode
           val number  = repeat1 digit wth (valOf o Int.fromString o String.implode)
+          val numFoc  = (number << spaces <|> (if focused () then succeed (valOf (!fh))
+                                               else fail "Expected a number."))
           val showall = try (string ":showAll" return ShowAll)
-          val showOne = try (string ":show") >> spaces >>
-                            (number << spaces <|> (if focused () then succeed (valOf (!fh))
-                                                   else fail "Expected a number.")) wth ShowOne
+          val showOne = try (string ":show") >> spaces >> numFoc << spaces wth ShowOne
           val focus   = try (string ":focus") >> spaces >> number wth Focus
           val unfocus = try (string ":unfocus" return Unfocus)
           val clear   = try (string ":clear" return Clear)
           val load    = try (string ":load") >> spaces >> str wth Load
-          val pmatch  = try (string ":case") >> spaces >>
-                            (if focused () then succeed (valOf (!fh)) else number << spaces)
-                            && rest wth Case
-          val refine  = try (string ":refine") >> spaces >>
-                            (if focused () then succeed (valOf (!fh)) else number << spaces)
-                            && rest wth Refine
-          val apply   = try (string ":apply") >> spaces >>
-                            (if focused () then succeed (valOf (!fh)) else number << spaces)
-                            && rest wth Apply
+          val pmatch  = try (string ":case") >> spaces >> numFoc << spaces && rest wth Case
+          val refine  = try (string ":refine") >> spaces >> numFoc << spaces && rest wth Refine
+          val apply   = try (string ":apply") >> spaces >> numFoc << spaces && rest wth Apply
           val expr    = rest wth Run
           val all     = showall <|> showOne <|> focus <|> unfocus <|> load <|> refine <|> apply <|> pmatch <|> expr
       in case parseString (all << spaces << eos) s of

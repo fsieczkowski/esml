@@ -163,38 +163,49 @@ struct
                    length (!holes) before holes := prev @ !holes @ post))
       end
           
-  fun applyHole (n, id) =
+  fun applyHole (n, s) =
       let val (prev, h :: post) = Util.takeDrop (n, !holes)
           val Open (env, ((D, G), t), _) = !h
           fun countArrs ts =
               let open CGAst
                   open DTFunctors
-                  fun aux (CTyp (TyArr (_, t)), acc) = aux (t, acc + 1)
-                    | aux (_, acc) = acc
-              in aux (ts, 0)
+                  fun aux (CTyp (TyArr (ta, t)), n, ts) = aux (t, n + 1, ta :: ts)
+                    | aux (t, n, ts) = (t, n, rev ts)
+              in aux (ts, 0, [])
               end
           fun countArrsS (CSPoly (_, t)) = countArrs t
             | countArrsS (CSMono t) = countArrs t
-          val narr = (case lookup (G, id) of
-                          SOME (ts, _) => countArrsS ts
-                        | NONE => (case lookup (#2 env, id) of
-                                       SOME (ts, _) => countArrsS (TAst.trTySNM ts)
-                                     | NONE => raise Err before print ("Undeclared identifier " ^ id ^ "\n")))
-          val nart = countArrs t
+          val e = (case Parser.parseExp s of
+                       INL err => raise Err before print err
+                     | INR e => e)
+          val te = ConstrGen.newUVar ()
+          val (e', sub) = (case TypeChecker.refineExpr (env, (D, G), te, e) of
+                               INL errs => raise Err before app (print o showErr) errs
+                             | INR es => es)
+          val te' = TypeChecker.substC (sub, te)
+          val (tretA, narrA, targsA) = countArrs te'
+          val (tretH, narrH, targsH) = countArrs t
           val emptyPos = Pos.pos (Coord.init "-") (Coord.init "-")
-          fun appNHoles (e, n) =
-              let open PAst
-                  open DTFunctors
-              in if n = 0 then e else appNHoles (PT (App (e, PHole emptyPos, emptyPos)), n - 1)
+          val _ = if narrA < narrH then raise Err before print "Types don't match" else ()
+          val (hargsA, margsA) = Util.takeDrop (narrA - narrH, targsA)
+          val cs = CEqc (D @ List.map flip (#1 env), tretH, tretA, emptyPos) ::
+                   ListPair.mapEq (fn (tH, tA) => CEqc (D @ List.map flip (#1 env), tH, tA, emptyPos)) (targsH, margsA)
+          val residual = CSolver.simplify (List.map (fn x => (x, x)) cs)
+          val sub      = CSolver.getSubst ()
+          val _ = if null residual then ()
+                  else (raise Err before app (print o showErr) (outL (TypeChecker.reportErrors ([], residual, sub))))
+          fun appNHoles (e, []) = (e, #2 (TAst.annE e))
+            | appNHoles (e, t :: ts) =
+              let val rt = TypeChecker.subst (sub, t)
+                  val ct = TypeChecker.substC (sub, t)
+                  val (ne, TyF (TyArr (_, retT))) = appNHoles (e, ts)
+              in  (TmF (App (ne, THole (ref (Open (env, ((D, G), ct), (emptyPos, rt)))), (emptyPos, retT))), retT)
               end
-          val nexp = appNHoles (PAst.PT (DTFunctors.Var (id, emptyPos)), Int.max(0, narr - nart))
-          val (nexp', sub) = (case TypeChecker.refineExpr (env, (D, G), t, nexp) of
-                                  INL errs => raise Err before app (print o showErr) errs
-                                | INR e => e)
+          val (nexp, _) = appNHoles (e', hargsA)
       in (holes := [];
-          getHolesE nexp';
+          getHolesE nexp;
           print ("Application successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");
-          h := Closed nexp';
+          h := Closed nexp;
           subHoles (sub, prev); subHoles (sub, post);
           length (!holes) before holes := prev @ !holes @ post)
       end
@@ -273,5 +284,6 @@ struct
       end
 
   end
+
 
 end

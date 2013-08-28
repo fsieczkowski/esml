@@ -637,12 +637,7 @@ struct
           val residual = CSolver.simplify (map (fn x => (x, x)) cs)
           val sub      = CSolver.getSubst ()
       in if null cgErrs andalso null residual
-         then let val e'' = trExpr (E, sub, e')
-                  val (pos, ty) = TAst.annE e''
-                  val ms = getMonos ty
-              in if null ms then Sum.INR (e'', sub)
-                 else reportMS [(ms, SMono ty, pos)]
-              end
+         then Sum.INR (trExpr (E, sub, e'), sub)
          else reportErrors (cgErrs, residual, sub)
       end handle ConstrGen.Fatal err => reportErrors ([err], [], [])
       

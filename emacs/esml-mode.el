@@ -136,17 +136,17 @@ The process PROC should be associated to a comint buffer."
     (setq esml-buffer-loaded t)
     (let ((lock-overlay (make-overlay (point-min) (point-max)))
           (hook (lambda (&rest unused)
-                  (remove-overlays (point-min) (point-max) 'name 'esml-lock)
-                  ;; TODO: does this really kill the overlay?
                   (setq esml-hole-list nil
-                        esml-buffer-loaded nil))))
+                        esml-buffer-loaded nil)
+                  (remove-overlays (point-min) (point-max) 'name 'esml-lock))))
+                  ;; TODO: does this really kill the overlay?
       (overlay-put lock-overlay 'name 'esml-lock)
       (overlay-put lock-overlay 'face 'esml-faces-locked)
       (overlay-put lock-overlay 'modification-hooks (list hook))
       (overlay-put lock-overlay 'insert-in-front-hooks
                    (list (lambda (ov post start end &rest unused)
                            (when (equal (point-min) start)
-                             (remove-overlays (point-min) (point-max) 'name 'esml-lock)
+                             (funcall hook)
                              (when (equal post 't)
                                (remove-overlays start end 'name 'esml-lock)))))))
     (let ((holes (esml-proc-holes))

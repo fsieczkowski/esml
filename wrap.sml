@@ -1,7 +1,7 @@
 structure Repl =
 struct
 
-  datatype comm = ShowAll | ShowOne of int | Focus of int | Unfocus | Clear | Malformed |
+  datatype comm = ShowAll | ShowOne of int | Focus of int | Unfocus | Clear | Malformed | Holes |
                   Load of string | Refine of int * string | Apply of int * string | Run of string |
                   Case of int * string
 
@@ -18,9 +18,10 @@ struct
     | exec (ShowOne n) = guardsz n (fn () => Top.showHole n)
     | exec (Focus   n) = guardsz n (fn () => fh := SOME n)
     | exec Unfocus     = if focused () then fh := NONE else print ("Error: No focused hole.\n")
-    | exec Clear       = Top.clear ()
+    | exec Clear       = (Top.clear (); nh := Top.numHoles ())
     | exec Malformed   = print ("Error: Malformed command.\n")
-    | exec (Load    s) = (Top.runFile s; nh := Top.numHoles ())
+    | exec Holes       = print (Top.getHolesPos () ^ "\n")
+    | exec (Load    s) = (Top.clear (); Top.runFile s; nh := Top.numHoles ())
     | exec (Refine ns) =
       guardsz (#1 ns) (fn () => (nh := !nh + Top.refineHole ns - 1; fh := NONE) handle Err => ())
     | exec (Apply  ns) =
@@ -48,13 +49,14 @@ struct
           val showOne = try (string ":show") >> spaces >> numFoc << spaces wth ShowOne
           val focus   = try (string ":focus") >> spaces >> number wth Focus
           val unfocus = try (string ":unfocus" return Unfocus)
+          val holes   = try (string ":holes" return Holes)
           val clear   = try (string ":clear" return Clear)
           val load    = try (string ":load") >> spaces >> str wth Load
-          val pmatch  = try (string ":case") >> spaces >> numFoc << spaces && rest wth Case
-          val refine  = try (string ":refine") >> spaces >> numFoc << spaces && rest wth Refine
-          val apply   = try (string ":apply") >> spaces >> numFoc << spaces && rest wth Apply
+          val pmatch  = try (string ":case") >> spaces >> numFoc && rest wth Case
+          val refine  = try (string ":refine") >> spaces >> numFoc && rest wth Refine
+          val apply   = try (string ":apply") >> spaces >> numFoc && rest wth Apply
           val expr    = rest wth Run
-          val all     = showall <|> showOne <|> focus <|> unfocus <|> load <|> refine <|> apply <|> pmatch <|> expr
+          val all     = showall <|> showOne <|> focus <|> unfocus <|> holes <|> clear <|> load <|> refine <|> apply <|> pmatch <|> expr
       in case parseString (all << spaces << eos) s of
              INL errs => Malformed
            | INR cmd  => cmd

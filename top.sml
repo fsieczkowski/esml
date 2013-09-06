@@ -116,6 +116,13 @@ struct
                                             foldl appDec (#1 (!env)) (rev ds');
                                             env := E')))
 
+  fun getHolesPos () =
+      let fun pphp (Open (_, _, (pos, _))) =
+              "(" ^ Int.toString (Coord.line (Pos.left pos) + Coord.abs (Pos.left pos) - 1) ^ " . " ^
+              Int.toString (Coord.line (Pos.right pos) + Coord.abs (Pos.right pos) - 1) ^ ")"
+      in "(" ^ String.concatWith " " (List.map (pphp o !) (!holes)) ^ ")"
+      end
+
   fun showHoles () =
       let fun pph (hr, (s, n)) =
               (case !hr of

@@ -116,7 +116,7 @@ struct
   val var  = !! (ident <|> opid) wth Var
   val rop  = try (idop <|> opop)
 
-  val hole = !! (char #"#" >> braces (repeat (noneOf [#"}"]))) wth PHole o #2
+  val hole = (!! (char #"#" >> char #"{" >> (repeat (noneOf [#"}"])) << char #"}")) << whiteSpace wth PHole o #2
 
   fun atKnd () = reservedOp "*" return KTyp <|> parens ($arKnd)
   and arKnd () = chainl1 ($atKnd) (reservedOp "->" return KArr)

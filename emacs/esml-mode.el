@@ -71,14 +71,14 @@ The process PROC should be associated to a comint buffer."
   (when esml-buffer-loaded
     (let ((hole (nth num esml-hole-list)))
       (when hole
-        (let* ((contents (buffer-substring (+ (car hole) 2) (- (cdr hole) 1)))
+        (let* ((contents (buffer-substring (car hole) (cdr hole)))
                (command  (concat ":refine " (int-to-string num) " " contents))
                (result   (inf-esml-get-result command)))
           (print contents)
           (print result)
           (save-excursion
-            (goto-char (car hole))
-            (delete-region (point) (cdr hole))
+            (goto-char (- (car hole) 2))
+            (delete-region (point) (+ (cdr hole) 1))
             (insert (concat "(" contents ")")))
           (esml-load-file))))))
 
@@ -90,26 +90,26 @@ The process PROC should be associated to a comint buffer."
     (let ((holes esml-hole-list)
           (moved nil))
       (while (and holes (not moved))
-        (let ((nexth (+ (caar holes) 2)))
+        (let ((nexth (caar holes)))
           (if (< (point) nexth)
               (progn
                 (goto-char nexth)
                 (setq moved 't))
             (setq holes (cdr holes)))))
       (if (and (not moved) esml-hole-list)
-          (goto-char (+ (caar esml-hole-list) 2))))))
+          (goto-char (caar esml-hole-list))))))
 
 (defun esml-prev-hole ()
   "Move cursor to the previous hole."
   (interactive)
   (message "esml-prev-hole")
   (when (and esml-buffer-loaded esml-hole-list)
-    (if (<= (point) (- (cdar esml-hole-list) 1))
-        (goto-char (+ (caar (last esml-hole-list)) 2))
+    (if (<= (point) (cdar esml-hole-list))
+        (goto-char (caar (last esml-hole-list)))
       (let ((holes (cdr esml-hole-list))
-            (lasth (+ (caar esml-hole-list) 2)))
-        (while (and holes (> (point) (- (cdar holes) 1)))
-          (setq lasth (+ (caar holes) 2)
+            (lasth (caar esml-hole-list)))
+        (while (and holes (> (point) (cdar holes)))
+          (setq lasth (caar holes)
                 holes (cdr holes)))
         (goto-char lasth)))))
 
@@ -155,9 +155,9 @@ The process PROC should be associated to a comint buffer."
                         (new-end (make-marker)))
                     (set-marker new-start (+ (car hole) 2))
                     (set-marker new-end (- (cdr hole) 1))
-                    (remove-overlays new-start new-end 'name 'esml-lock)))))
-      (mapc doit holes)
-      (setq esml-hole-list holes))))
+                    (remove-overlays new-start new-end 'name 'esml-lock)
+                    (cons new-start new-end)))))
+      (setq esml-hole-list (mapcar doit holes)))))
 
 ;;; inferior esml stuff
 

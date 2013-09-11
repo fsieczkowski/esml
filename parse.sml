@@ -49,6 +49,7 @@ struct
       val Fun   = PD o F.Fun
       val PFun  = PD o F.PFun
       val Data  = PD o F.Data
+      val Type  = PD o F.Type
       val TArr  = PTyp o F.TyArr
       val TProd = PTyp o F.TyProd
       val TApp  = PTyp o F.TyApp
@@ -130,6 +131,8 @@ struct
              separate1 (!! (ident && kindAnn << reservedOp "=" && separate ctor (reservedOp "|") wth flat3) wth flat4')
                (reserved "and") wth Data
 
+  val typedec = reserved "type" >> !! (ident << reservedOp "=" && parseTyp) wth Type o flat3'
+
   val pattern = ident && repeat ident
 
   fun expf ()   =  !! (reserved "fn" >> arg && reservedOp "=>" >> $expf)
@@ -170,6 +173,7 @@ struct
                      (try (separate1 ($fundef) (reserved "and") wth Fun)
                       <|> (separate1 ($pfundef) (reserved "and") wth PFun))
                <|> data
+               <|> typedec
 
 (*
 

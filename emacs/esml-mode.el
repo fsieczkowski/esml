@@ -9,9 +9,13 @@
   '((t (:background "slate gray")))
   :group 'esml)
 
+(defface esml-faces-active-hole
+  '((t (:background "red")))
+  :group 'esml)
+
 (defvar esml-buffer-loaded nil)
 (defvar esml-hole-list nil)
-
+(defvar esml-active-hole nil)
 
 (defvar inf-esml-seen-prompt nil)
 
@@ -82,36 +86,93 @@ The process PROC should be associated to a comint buffer."
             (insert (concat "(" contents ")")))
           (esml-load-file))))))
 
-(defun esml-next-hole ()
-  "Move cursor to the next hole."
+(defun esml-refine-active-hole ()
   (interactive)
-  (message "esml-next-hole")
-  (when esml-buffer-loaded
+  (unless (null esml-active-hole)
+    (esml-refine-hole esml-active-hole)))
+
+(defun esml-next-hole-from-pos ()
+  "Move cursor to the hole after the point, return its number and
+delimiting markers."
+  (interactive)
+  (when (and esml-buffer-loaded esml-hole-list)
     (let ((holes esml-hole-list)
-          (moved nil))
+          (moved nil)
+          (num 0)
+          (hole nil))
       (while (and holes (not moved))
         (let ((nexth (caar holes)))
           (if (< (point) nexth)
               (progn
                 (goto-char nexth)
-                (setq moved 't))
-            (setq holes (cdr holes)))))
+                (setq hole (car holes)
+                      moved 't))
+            (setq num (+ num 1)
+                  holes (cdr holes)))))
       (if (and (not moved) esml-hole-list)
-          (goto-char (caar esml-hole-list))))))
+          (progn
+            (goto-char (caar esml-hole-list))
+            '(0 . (car esml-hole-list)))
+        (cons num hole)))))
 
-(defun esml-prev-hole ()
-  "Move cursor to the previous hole."
+(defun esml-next-hole ()
   (interactive)
-  (message "esml-prev-hole")
+  (when (and esml-buffer-loaded esml-hole-list)
+    (if (null esml-active-hole)
+        (let ((nh (esml-next-hole-from-pos)))
+          (mark-active (cdr nh))
+          (setq esml-active-hole (car nh)))
+      (let ((nh (nth (+ esml-active-hole 1) esml-hole-list))
+            (oh (nth esml-active-hole esml-hole-list)))
+        (if (null nh)
+            (setq nh (car esml-hole-list)
+                  esml-active-hole 0)
+          (setq esml-active-hole (+ esml-active-hole 1)))
+        (goto-char (car nh))
+        (mark-active nh)
+        ))
+    (show-current-hole)))
+
+(defun esml-prev-hole-from-pos ()
+  "Move cursor to the hole before the point, return number and delimiting markers."
+  (interactive)
   (when (and esml-buffer-loaded esml-hole-list)
     (if (<= (point) (cdar esml-hole-list))
-        (goto-char (caar (last esml-hole-list)))
+        (let ((hole (car (last esml-hole-list)))
+              (num  (length esml-hole-list)))
+          (goto-char (car hole))
+          '(num . hole))
       (let ((holes (cdr esml-hole-list))
-            (lasth (caar esml-hole-list)))
+            (lasth (car esml-hole-list))
+            (num   0))
         (while (and holes (> (point) (cdar holes)))
-          (setq lasth (caar holes)
-                holes (cdr holes)))
-        (goto-char lasth)))))
+          (setq lasth (car holes)
+                holes (cdr holes)
+                num   (+ num 1)))
+        (goto-char (car lasth))
+        '(num . lasth)))))
+
+(defun esml-prev-hole ()
+  (interactive)
+  (when (and esml-buffer-loaded esml-hole-list)
+    (if (null esml-active-hole)
+        (let ((nh (esml-prev-hole-from-pos)))
+          (mark-active (cdr nh))
+          (setq esml-active-hole (car nh)))
+      (let ((nh  nil)
+            (oh  nil)
+            (num nil))
+        (if (= esml-active-hole 0)
+            (setq nh (car (last esml-hole-list))
+                  oh (car esml-hole-list)
+                  num (- (length esml-hole-list) 1))
+          (setq nh (nth (- esml-active-hole 1) esml-hole-list)
+                oh (nth esml-active-hole esml-hole-list)
+                num (- esml-active-hole 1)))
+        (mark-active nh)
+        (goto-char (car nh))
+        (setq esml-active-hole num)))
+    (show-current-hole)))
 
 (defun esml-proc-load-buffer ()
   "Send the buffer into the esml interpreter"
@@ -129,15 +190,23 @@ The process PROC should be associated to a comint buffer."
            (result (inf-esml-get-result command)))
       (car (read-from-string result)))))
 
+(defun mark-active (hole)
+  (remove-overlays (point-min) (point-max) 'name 'esml-hole)
+  (let ((hole-overlay (make-overlay (car hole) (cdr hole))))
+    (overlay-put hole-overlay 'name 'esml-hole)
+    (overlay-put hole-overlay 'face 'esml-faces-active-hole)))
+
 (defun esml-load-file ()
   "Load the buffer."
   (interactive)
   (when (esml-proc-load-buffer)
-    (setq esml-buffer-loaded t)
+    (setq esml-buffer-loaded t
+          esml-active-hole nil)
     (let ((lock-overlay (make-overlay (point-min) (point-max)))
           (hook (lambda (&rest unused)
                   (setq esml-hole-list nil
                         esml-buffer-loaded nil)
+                  (remove-overlays (point-min) (point-max) 'name 'esml-hole)
                   (remove-overlays (point-min) (point-max) 'name 'esml-lock))))
                   ;; TODO: does this really kill the overlay?
       (overlay-put lock-overlay 'name 'esml-lock)
@@ -176,6 +245,18 @@ The process PROC should be associated to a comint buffer."
 
 (defvar esml-prog-prompt-regexp "^-[0-9]*->"
   "Prompt for `inf-esml'")
+
+(defun show-current-hole ()
+  "Prints the current hole information in the *esml holes* buffer"
+  (interactive)
+  (unless (null esml-active-hole)
+    (let* ((buf (get-buffer-create "*esml holes*"))
+           (command (concat ":show " (int-to-string esml-active-hole)))
+           (data (inf-esml-get-result command)))
+      (display-buffer buf)
+      (with-current-buffer buf
+        (delete-region (point-min) (point-max))
+        (insert data)))))
 
 (defun run-inf-esml ()
   "Run an inferior instance of `inf-esml' inside Emacs."

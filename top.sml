@@ -8,23 +8,26 @@ struct
 
       fun eval e = e
       open TypeChecker
-      fun ppty t = TAst.ppty (#1 (!env), t)
-      fun pptys s = TAst.pptys (#1 (!env), s)
+      fun ppty t = TAst.ppty (TAst.stripTC (#1 (!env)), t)
+      fun pptys s = TAst.pptys (TAst.stripTC (#1 (!env)), s)
       fun showVal e = "-exp-:" ^ (ppty o #2 o TAst.annE) e ^ "\n"
       fun extData ((tv, tn), k, cs, _) = (tv, (tn, DData (k, map (fn (x, _, _) => x) cs)))
       fun showDec (D, TAst.DF (DTFunctors.Fun ds)) =
-          concat (map (fn (x, _, _, (_, ts)) => "val " ^ x ^ " : " ^ TAst.pptys (D, ts) ^ "\n") ds)
+          concat (map (fn (x, _, _, (_, ts)) => "val " ^ x ^ " : " ^ TAst.pptys (TAst.stripTC D, ts) ^ "\n") ds)
         | showDec (D, TAst.DF (DTFunctors.PFun ds)) =
-          concat (map (fn (x, _, _, _, _, (_, ts)) => "val " ^ x ^ " : " ^ TAst.pptys (D, ts) ^ "\n") ds)
+          concat (map (fn (x, _, _, _, _, (_, ts)) => "val " ^ x ^ " : " ^ TAst.pptys (TAst.stripTC D, ts) ^ "\n") ds)
         | showDec (D, TAst.DF (DTFunctors.Data ds)) =
           let fun pptargs [] = ""
                 | pptargs ts = "[" ^ String.concatWith " " (map (fn (_, tn) => tn) ts) ^ "] "
               val D' = List.revAppend (map extData ds, D)
-              fun ppcons (x, tvs, ty) = x ^ " : " ^ pptargs tvs ^ TAst.ppty (List.revAppend (map (fn (x, t) => (x, (t, DPoly))) tvs, D'), ty)
+              fun ppcons (x, tvs, ty) = x ^ " : " ^ pptargs tvs ^ TAst.ppty (List.revAppend (tvs, TAst.stripTC D'), ty)
               fun ppdec ((_, tn), k, cs, _) =
                   "datatype " ^ tn ^ " : " ^ ppknd k ^ " = " ^ String.concatWith " | " (map ppcons cs) ^ "\n"
           in concat (map ppdec ds)
           end
+        | showDec (D, TAst.DF (DTFunctors.Type ((tv, tn), ty, a))) =
+          "type " ^ tn ^ " = " ^ TAst.ppty (TAst.stripTC D, ty) ^ "\n"
+      fun strip (GD, LD) = CGAst.stripTC LD @ TAst.stripTC GD
       fun showErr (EVarUndefined (v, pos))  =
           Pos.toString pos ^ " Error: unbound variable: " ^ v ^ "\n"
         | showErr (ETVarUndefined (a, pos)) =
@@ -33,12 +36,14 @@ struct
           Pos.toString pos ^ " Type error: free monomorphic type variables.\nIn type: " ^ pptys ts ^ "\n"
         | showErr (EStructDiff (D, t1, t2, st1, st2, pos)) =
           Pos.toString pos ^ " Type error: incompatible types.\nCannot match: "
-          ^ CGAst.ppty D t1 ^ " with " ^ CGAst.ppty D t2 ^ " arising from the following equation.\nExpected: "
-          ^ CGAst.ppty D st1 ^ "\nActual: " ^ CGAst.ppty D st2 ^ "\n"
+          ^ CGAst.ppty (strip D) t1 ^ " with " ^ CGAst.ppty (strip D) t2
+          ^ " arising from the following equation.\nExpected: "
+          ^ CGAst.ppty (strip D) st1 ^ "\nActual: " ^ CGAst.ppty (strip D) st2 ^ "\n"
         | showErr (ECircularDep (D, n, t, st1, st2, pos)) =
           Pos.toString pos ^ " Type error: circular dependency.\nType: "
-          ^ CGAst.ppuvar n ^ " occurs in " ^ CGAst.ppty D t ^ " arising from the following equation.\nExpected: "
-          ^ CGAst.ppty D st1 ^ "\nActual: " ^ CGAst.ppty D st2 ^ "\n"
+          ^ CGAst.ppuvar n ^ " occurs in " ^ CGAst.ppty (strip D) t
+          ^ " arising from the following equation.\nExpected: "
+          ^ CGAst.ppty (strip D) st1 ^ "\nActual: " ^ CGAst.ppty (strip D) st2 ^ "\n"
         | showErr (EOther (s, pos)) = Pos.toString pos ^ " " ^ s
       open Sum
   in
@@ -46,6 +51,8 @@ struct
   exception Err of string
 
   fun appDec (d as DF (Data ds), D) = List.revAppend (List.map extData ds, D) before print (showDec (D, d))
+    | appDec (d as DF (Type ((tv, tn), td, (pos, k, _))), D) =
+      (tv, (tn, DTypeDef (k, td))) :: D before print (showDec (D, d))
     | appDec (d, D) = D before print (showDec (D, d))
 
   fun getHolesE (THole hl) = (case !hl of
@@ -64,6 +71,7 @@ struct
   and getHolesD (DF (Fun ds))  = app (fn (_, _, e, _) => getHolesE e) ds
     | getHolesD (DF (PFun ds)) = app (fn (_, _, _, _, e, _) => getHolesE e) ds
     | getHolesD (DF (Data _)) = ()
+    | getHolesD (DF (Type _)) = ()
 
 
   fun runPExp e =
@@ -126,7 +134,7 @@ struct
   fun showHoles () =
       let fun pph (hr, (s, n)) =
               (case !hr of
-                   Open ((DG, _), ((D, G), t), _) => (s ^ Int.toString n ^ " : " ^ CGAst.ppty (D @ List.map flip DG) t ^ "\n", n + 1)
+                   Open ((DG, _), ((D, G), t), _) => (s ^ Int.toString n ^ " : " ^ CGAst.ppty (strip (DG, D)) t ^ "\n", n + 1)
                  | Closed t => raise Util.Impossible)
       in (#1 o foldl pph ("", 0)) (!holes)
       end
@@ -136,7 +144,7 @@ struct
                                         Open (env, tys, _) => (env, tys)
                                       | Closed t => raise Util.Impossible)
           val tc = String.concatWith "\n" (List.map #1 (rev D))
-          val DD = D @ List.map flip (#1 env)
+          val DD = strip (#1 env, D)
           val vc = String.concat (List.map (fn (v, (ts, _)) => v ^ " : " ^ CGAst.pptys (DD, ts) ^ "\n") (rev G))
           val sep = "====================\n"
           val ty = CGAst.ppty DD t
@@ -171,7 +179,8 @@ struct
       end
           
   fun applyHole (n, s) =
-      let val (prev, h :: post) = Util.takeDrop (n, !holes)
+      let open Constr
+          val (prev, h :: post) = Util.takeDrop (n, !holes)
           val Open (env, ((D, G), t), _) = !h
           fun countArrs ts =
               let open CGAst
@@ -195,8 +204,8 @@ struct
           val emptyPos = Pos.pos (Coord.init "-") (Coord.init "-")
           val _ = if narrA < narrH then raise Err "Types don't match" else ()
           val (hargsA, margsA) = Util.takeDrop (narrA - narrH, targsA)
-          val cs = CEqc (D @ List.map flip (#1 env), tretH, tretA, emptyPos) ::
-                   ListPair.mapEq (fn (tH, tA) => CEqc (D @ List.map flip (#1 env), tH, tA, emptyPos)) (targsH, margsA)
+          val cs = CEqc ((#1 env, D), tretH, tretA, emptyPos) ::
+                   ListPair.mapEq (fn (tH, tA) => CEqc ((#1 env, D), tH, tA, emptyPos)) (targsH, margsA)
           val residual = CSolver.simplify (List.map (fn x => (x, x)) cs)
           val sub      = CSolver.getSubst ()
           val _ = if null residual then ()
@@ -252,9 +261,13 @@ struct
       let fun mkHole aG t = Open (env, ((D, aG @ G), trTypNM t), (dummyPos, t))
           val (_, t) = TAst.annE e
           val (v, ts) = splitT (t, [])
-          val cs = case lookup (List.map flip D @ #1 env, v) of
+          val cs = case lookup (List.map flip D, v) of
                        SOME (_, DData (_, cs))  => cs
-                     | _ => raise Err "Expression's type is not a datatype"
+                     | SOME _ => raise Err "Expression's type is not a datatype"
+                     | NONE => (case lookup (#1 env, v) of
+                                    SOME (_, DData (_, cs)) => cs
+                                  | SOME _ => raise Err "Expression's type is not a datatype"
+                                  | NONE => raise Impossible)
           fun doCon c =
               let val ((ft, ats), bs) = (case #1 (valOf (lookup (#2 env, c))) of
                                              SPoly (bs, t) => (stripArrs (t, []), bs)

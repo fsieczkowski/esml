@@ -2,10 +2,10 @@ structure ConstrGen :
 sig
 
     datatype 'ed err = VarUndef of CGAst.var * 'ed | TVarUndef of CGAst.tname * 'ed | Other of string * 'ed
-    val genConstrExpr : TAst.env * PAst.pTerm -> CGAst.cgTerm * CGAst.constr list
-    val genConstrDec  : TAst.env * PAst.pDec  -> CGAst.cgDec  * CGAst.constr list
+    val genConstrExpr : TAst.env * PAst.pTerm -> CGAst.cgTerm * Constr.constr list
+    val genConstrDec  : TAst.env * PAst.pDec  -> CGAst.cgDec  * Constr.constr list
     val genConstrFrom : TAst.env * CGAst.cgEnv * CGAst.cgTyp * PAst.pTerm ->
-                        CGAst.cgTerm * CGAst.constr list
+                        CGAst.cgTerm * Constr.constr list
     val getErrors : unit -> PAst.pos err list
     val toString : CGAst.pos -> string
     val restart  : unit -> unit
@@ -19,6 +19,7 @@ struct
   open CGAst
   open PAst
   open Util
+  open Constr
 
   exception NotFound
 
@@ -65,6 +66,8 @@ struct
            | Or  => bb
       end
 
+  fun toPrintContext (GC, LC) = CGAst.stripTC LC @ TAst.stripTC GC
+
   fun kindSynth (D, pos, PTyp (TyArr  (t1, t2))) =
       let val t1' = kindCheck (D, pos, t1, KTyp)
           val t2' = kindCheck (D, pos, t2, KTyp)
@@ -78,8 +81,8 @@ struct
     | kindSynth (D, pos, PTyp (TyApp  (t1, t2))) =
       let val (t1', kf) = kindSynth (D, pos, t1)
           val (t2', ka) = kindSynth (D, pos, t2)
-          val errstr = "Kind mismatch: " ^ ppty D t1' ^ " : " ^ ppknd kf ^
-                       " applied to " ^ ppty D t2' ^ " : " ^ ppknd ka ^ "."
+          val errstr = "Kind mismatch: " ^ ppty (toPrintContext D) t1' ^ " : " ^ ppknd kf ^
+                       " applied to " ^ ppty (toPrintContext D) t2' ^ " : " ^ ppknd ka ^ "."
       in case kf of
              KArr (karg, kres) => if karg = ka then (CTyp (TyApp (t1', t2')), KTyp)
                                   else raise Fatal (Other (errstr, pos))
@@ -88,14 +91,16 @@ struct
     | kindSynth (D, pos, PTyp TyInt)  = (CTyp TyInt, KTyp)
     | kindSynth (D, pos, PTyp TyBool) = (CTyp TyBool, KTyp)
     | kindSynth (D, pos, PTyp (TyVar s)) =
-      (case lookup (D, s) of
+      (case lookup (#2 D, s) of
            SOME (n, d) => (CTyp (TyVar n), kindOf d)
-         | NONE => (newUVar (), KTyp) before errors := TVarUndef (s, pos) :: !errors)
+         | NONE => (case lookup (map flip (#1 D), s) of
+                        SOME (n, d) => (CTyp (TyVar n), kindOf d)
+                      | NONE => (newUVar (), KTyp) before errors := TVarUndef (s, pos) :: !errors))
 
   and kindCheck (D, pos, pty, k) =
       let val (cty, k') = kindSynth (D, pos, pty)
       in  if k = k' then cty
-          else raise Fatal (Other ("Kind mismatch in type '" ^ ppty D cty ^ "' : " ^ ppknd k' ^
+          else raise Fatal (Other ("Kind mismatch in type '" ^ ppty (toPrintContext D) cty ^ "' : " ^ ppknd k' ^
                                    " does not match the expected " ^ ppknd k ^ ".", pos))
       end
 
@@ -103,8 +108,8 @@ struct
     | ctorCheck (D, pos, tv, CTyp (TyApp (t, _))) = ctorCheck (D, pos, tv, t)
     | ctorCheck (D, pos, tv, CTyp (TyVar tv'))    =
       if tv = tv' then ()
-      else raise Fatal (Other ("Couldn't match " ^ ppty D (CTyp (TyVar tv)) ^ " against " ^
-                               ppty D (CTyp (TyVar tv')) ^ ".", pos))
+      else raise Fatal (Other ("Couldn't match " ^ ppty (toPrintContext D) (CTyp (TyVar tv)) ^ " against " ^
+                               ppty (toPrintContext D) (CTyp (TyVar tv')) ^ ".", pos))
     | ctorCheck (D, pos, tv, _) =  raise Fatal (Other ("Constructor does not end in a variable or type application", pos))
 
   fun instTy (targs, ty) =
@@ -139,12 +144,12 @@ struct
 
   fun mkEnv ((D, G), (DL, GL)) = {lty = DL, gty = D, lvar = GL, gvar = G}
   fun withLV (E : env, GL) = {lty = #lty E, gty = #gty E, lvar = GL,      gvar = #gvar E}
-  fun withLT  (E : env, DL) = {lty = DL,     gty = #gty E, lvar = #lvar E, gvar = #gvar E}
+  fun withLT (E : env, DL) = {lty = DL,     gty = #gty E, lvar = #lvar E, gvar = #gvar E}
 
   infix 1 withLV
   infix 1 withLT
 
-  fun getTEnv (env : env) = #lty env @ map flip (#gty env)
+  fun getTEnv (env : env) = (#gty env, #lty env)
 
   fun cgExpr (env, PT (Var (x, pos)), t, cs) =
       (case lookup (#lvar env, x) of
@@ -215,7 +220,7 @@ struct
       in (CTerm (Case (e', rev ralts, (pos, t))), cs2)
       end
     | cgExpr (env, PAnn (e, pt, pos), t, cs) =
-      let val at = kindCheck (#lty env @ map flip (#gty env), pos, pt, KTyp)
+      let val at = kindCheck (getTEnv env, pos, pt, KTyp)
           val (e', cs') = cgExpr (env, e, t, cs)
       in  (e', CEqc (getTEnv env, t, at, pos) :: cs')
       end
@@ -240,14 +245,14 @@ struct
       end
     | cgDec (env, PD (PFun defs), cs) =
       let fun hArg (D, pos) ((x, pt), (asC, tr)) =
-              let val t = kindCheck (D @ map flip (#gty env), pos, pt, KTyp)
+              let val t = kindCheck ((#gty env, D), pos, pt, KTyp)
               in  ((x, t) :: asC, (CTyp (TyArr (t, tr))))
               end
           fun aux (G, [], cs) = (G, [], cs)
             | aux (G, (x, targs, vargs, tres, e, pos) :: ds, cs) =
               let val targsC = map (fn x => (x, newTVar ())) targs
                   val DC = List.revAppend (map (fn (x, t) => (x, (t, DPoly))) targsC, #lty env)
-                  val tresC = kindCheck (DC @ map flip (#gty env), pos, tres, KTyp)
+                  val tresC = kindCheck ((#gty env, DC), pos, tres, KTyp)
                   val (vargsC, tyC) = foldr (hArg (DC, pos)) ([], tresC) vargs
                   val (GR, ds', cs') = aux ((x, (CSPoly (targsC, tyC), BVar)) :: G, ds, cs)
                   val (eC, rcs) = cgExpr (env withLT DC withLV List.revAppend (map (fn (x, t) => (x, (CSMono t, BVar))) vargsC, GR), e, tresC, cs')
@@ -265,8 +270,9 @@ struct
         fun hCon tv D pos ((v, tns, ty), (cs, cts)) =
             let val tvs = map (fn tn => (tn, newTVar ())) tns
                 val DC = List.revAppend (map (fn (x, t) => (x, (t, DPoly))) tvs, D)
-                val tres = kindCheck (DC @ map flip (#gty env), pos, ty, KTyp)
-                val _ = ctorCheck (DC, pos, tv, tres)
+                val TEnv = (#gty env, DC)
+                val tres = kindCheck (TEnv, pos, ty, KTyp)
+                val _ = ctorCheck (TEnv, pos, tv, tres)
             in ((v, tvs, tres) :: cs, (v, CSPoly (tvs, tres)) :: cts)
             end
         (* Handle one (of possibly several mutually recursive) declaration:
@@ -275,11 +281,17 @@ struct
         fun hDec D ((tn, k, cs, pos), (ds, G)) =
             let val (tv, _) = valOf (lookup (tyks, tn))
                 val (rcs, rcts) = foldl (hCon tv D pos) ([], []) cs
-            in (((tn, tv), k, rev rcs, (pos, rev rcts)) :: ds, map (fn (x, y) => (x, (y, Ctor))) rcts @ G)
+            in (((tn, tv), k, rev rcs, (pos, k, rev rcts)) :: ds,
+                map (fn (x, y) => (x, (y, Ctor))) rcts @ G)
             end
         val (dsr, GR) = foldl (hDec DR) ([], #lvar env) ds
     in (env withLT DR withLV GR, CDec (Data (rev dsr)), cs)
     end
+    | cgDec (env, PD (Type (x, t, pos)), cs) =
+      let val (cty, k) = kindSynth (getTEnv env, pos, t)
+          val tv = newTVar ()
+      in (env withLT (x, (tv, DTypeDef (k, cty))) :: #lty env, CDec (Type ((x, tv), cty, (pos, k, []))), cs)
+      end
 
   and cgDecs (env, ds, cs) =
       let fun aux ([], env, rds, cs) = (env, rev rds, cs)
@@ -350,6 +362,7 @@ struct
   structure UF = IUnionFind
 
   open CGAst
+  open Constr
 
   datatype 'ed res
     = StructDiff of cgTyp * cgTyp * 'ed
@@ -402,6 +415,14 @@ struct
 
   local
       fun getPos (CEqc (_, _, _, pos)) = pos
+      fun getDef ((ge, le), tv) =
+          (case lookup (map flip le, tv) of
+               SOME (tn, DTypeDef (k, ty)) => SOME ty
+             | SOME _ => NONE
+             | NONE => (case lookup (ge, tv) of
+                            SOME (tn, DTypeDef (k, ty)) => SOME (TAst.trTypNM ty)
+                          | SOME _ => NONE
+                          | NONE => raise Fail "Type variable unbound in the context"))
   in
   fun fsimpl (TyArr (t1, t2),  TyArr (s1, s2),  D, c, pr) =
       pend (CEqc (D, t1, s1, getPos c), c) (pend (CEqc (D, t2, s2, getPos c), c) pr)
@@ -412,7 +433,20 @@ struct
     | fsimpl (TyInt,  TyInt,  D, c, pr) = pr
     | fsimpl (TyBool, TyBool, D, c, pr) = pr
     | fsimpl (t1 as TyVar n1, t2 as TyVar n2, D, c, pr) =
-      if n1 = n2 then pr else res (StructDiff (CTyp t1, CTyp t2, c)) pr
+      if n1 = n2 then pr else
+      (case getDef (D, n1) of
+           SOME ty => pend (CEqc (D, ty, CTyp t2, getPos c), c) pr
+         | NONE => (case getDef (D, n2) of
+                        SOME ty => pend (CEqc (D, CTyp t1, ty, getPos c), c) pr
+                      | NONE => res (StructDiff (CTyp t1, CTyp t2, c)) pr))
+    | fsimpl (t1 as TyVar n1, t2, D, c, pr) =
+      (case getDef (D, n1) of
+           SOME ty => pend (CEqc (D, ty, CTyp t2, getPos c), c) pr
+         | NONE => res (StructDiff (CTyp t1, CTyp t2, c)) pr)
+    | fsimpl (t1, t2 as TyVar n2, D, c, pr) =
+      (case getDef (D, n2) of
+           SOME ty => pend (CEqc (D, CTyp t1, ty, getPos c), c) pr
+         | NONE => res (StructDiff (CTyp t1, CTyp t2, c)) pr)
     | fsimpl (t1, t2, D, c, pr) = res (StructDiff (CTyp t1, CTyp t2, c)) pr
   end
 
@@ -538,9 +572,12 @@ struct
     | trDec (env, sub, CDec (Data ds)) =
       let fun hCtor (x, tvs, ty)  = (x, map (fn (x, y) => (y, x)) tvs, subst (sub, ty))
           fun hCTyp (x, tyS)      = (x, substS (sub, tyS))
-          fun hData ((n, t), k, cs, (p, cts)) = ((t, n), k, map hCtor cs, (p, map hCTyp cts))
+          fun hData ((n, t), k, cs, (p, k', cts)) = ((t, n), k, map hCtor cs, (p, k', map hCTyp cts))
       in DF (Data (map hData ds))
       end
+    | trDec (env, sub, CDec (Type ((tn, tv), t, (pos, k, [])))) =
+      DF (Type ((tv, tn), subst (sub, t), (pos, k, [])))
+    | trDec (_, _, CDec (Type (_, _, (_, _, _ :: _)))) = raise Impossible
 
   and trDecs (env, sub, ds) = map (fn d => trDec (env, sub, d)) ds
 
@@ -567,13 +604,14 @@ struct
           fun gMon (Fun ds) = List.map (fn (_, _, _, (pos, tyS)) => (gMS tyS, tyS, pos)) ds
             | gMon (PFun ds) = List.map (fn (_, _, _, _, _, (pos, tyS)) => (gMS tyS, tyS, pos)) ds
             | gMon (Data _) = []
+            | gMon (Type _) = []
       in fout (gMon d)
       end
 
   datatype error = EVarUndefined  of var * pos
                  | ETVarUndefined of tname * pos
-                 | ECircularDep   of cgTContext * int * cgTyp * cgTyp * cgTyp * pos
-                 | EStructDiff    of cgTContext * cgTyp * cgTyp * cgTyp * cgTyp * pos
+                 | ECircularDep   of (TAst.tycontext * cgTContext) * int * cgTyp * cgTyp * cgTyp * pos
+                 | EStructDiff    of (TAst.tycontext * cgTContext) * cgTyp * cgTyp * cgTyp * cgTyp * pos
                  | EEscapedMonos  of int list * tyS * pos
                  | EOther         of string * pos
 

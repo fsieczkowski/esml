@@ -13,11 +13,14 @@ fun hd [A] (xs : List A) : Option A =
       | Cons x xs => Some x
     end
 
-fun tl [A] (xs : List A) : Option A =
+fun tl [A] (xs : List A) : Option (List A) =
     case xs of
         Nil => None
       | Cons x xs => #{ This is a hole, text inside is treated as a comment }
     end
+
+fun null [A] (xs : List A) : bool =
+    #{ }
 
 (* Monomorphic functions do not need type annotations *)
 fun factorial n =

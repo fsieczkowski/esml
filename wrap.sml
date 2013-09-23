@@ -33,13 +33,13 @@ struct
       (let val _ = guard (#1 ns)
            val (hc, re) = Top.applyHole ns
            val _ = (nh := !nh + hc - 1; fh := NONE)
-       in print ("(ok \"(" ^ TAst.ppexp [] 2 re ^ ")\")\n")
+       in print ("(ok \"" ^ TAst.ppexp [] 2 re ^ "\")\n")
        end handle Top.Err s => print ("(error \"" ^ s ^ "\")\n"))
     | exec (Case   ns) =
       (let val _ = guard (#1 ns)
            val (hc, re) = Top.refineCase ns
            val _ = (nh := !nh + hc - 1; fh := NONE)
-       in print ("(ok \"(" ^ TAst.ppexp [] 2 re ^ ")\")\n")
+       in print ("(ok \"" ^ TAst.ppexp [] 2 re ^ "\")\n")
        end handle Top.Err s => print ("(error \"" ^ s ^ "\")\n"))
     | exec (Run s)     = (Top.runReplExp s; nh := Top.numHoles ())
 

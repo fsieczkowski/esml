@@ -11,23 +11,36 @@ struct
 
   val _ = Readline.using_history ()
 
-  fun guardsz n f = if n < !nh then f () else print ("Error: No such hole.\n")
+  fun guardsz n f = if n < !nh then f () else print ("(error \"Error: No such hole.\")\n")
+  fun guard n = guardsz n (fn () => ())
   fun focused () = isSome (!fh)
 
-  fun exec ShowAll     = Top.showHoles ()
-    | exec (ShowOne n) = guardsz n (fn () => Top.showHole n)
+  fun exec ShowAll     = print ("(ok \"" ^ Top.showHoles () ^ "\")\n")
+    | exec (ShowOne n) = guardsz n (fn () => print ("(ok \"" ^ Top.showHole n ^ "\")\n"))
     | exec (Focus   n) = guardsz n (fn () => fh := SOME n)
-    | exec Unfocus     = if focused () then fh := NONE else print ("Error: No focused hole.\n")
+    | exec Unfocus     = if focused () then fh := NONE else print ("(error \"Error: No focused hole.\")\n")
     | exec Clear       = (Top.clear (); nh := Top.numHoles ())
-    | exec Malformed   = print ("Error: Malformed command.\n")
+    | exec Malformed   = print ("(error \"Error: Malformed command.\")\n")
     | exec Holes       = print (Top.getHolesPos () ^ "\n")
     | exec (Load    s) = (Top.clear (); Top.runFile s; nh := Top.numHoles ())
     | exec (Refine ns) =
-      guardsz (#1 ns) (fn () => (nh := !nh + Top.refineHole ns - 1; fh := NONE) handle Err => ())
+      (let val _ = guard (#1 ns)
+           val hc = Top.refineHole ns
+           val _ = (nh := !nh + hc - 1; fh := NONE)
+       in print ("(ok \"\")\n")
+       end handle Top.Err s => print ("(error \"" ^ s ^ "\")\n"))
     | exec (Apply  ns) =
-      guardsz (#1 ns) (fn () => (nh := !nh + Top.applyHole ns - 1; fh := NONE) handle Err => ())
+      (let val _ = guard (#1 ns)
+           val (hc, re) = Top.applyHole ns
+           val _ = (nh := !nh + hc - 1; fh := NONE)
+       in print ("(ok \"(" ^ TAst.ppexp [] 2 re ^ ")\")\n")
+       end handle Top.Err s => print ("(error \"" ^ s ^ "\")\n"))
     | exec (Case   ns) =
-      guardsz (#1 ns) (fn () => (nh := !nh + Top.refineCase ns - 1; fh := NONE) handle Err => ())
+      (let val _ = guard (#1 ns)
+           val (hc, re) = Top.refineCase ns
+           val _ = (nh := !nh + hc - 1; fh := NONE)
+       in print ("(ok \"(" ^ TAst.ppexp [] 2 re ^ ")\")\n")
+       end handle Top.Err s => print ("(error \"" ^ s ^ "\")\n"))
     | exec (Run s)     = (Top.runReplExp s; nh := Top.numHoles ())
 
   fun parseInput s =

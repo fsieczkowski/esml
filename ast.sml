@@ -75,6 +75,44 @@ struct
     | ppty f g n TyBool = "bool"
     | ppty f g n (TyVar a) = g a
 
+  type ('alt, 'arg, 'dec, 'term, 'var) pprecE =
+       {alt: 'alt -> string, arg: 'arg -> string, dec: 'dec -> string,
+        term: int -> 'term -> string, var: 'var -> string}
+  type ('arg, 'targ, 'term, 'typ, 'var) pprecD =
+       {arg: 'arg -> string, targ: 'targ -> string, term: 'term -> string,
+        typ: 'typ -> string, var: 'var -> string}
+
+  fun ppexp (fs : ('alt, 'arg, 'dec, 'term, 'var) pprecE) n (Var (v, _)) = #var fs v
+    | ppexp fs n (Abs (a, t, _)) =
+      let val s = "fn " ^ #arg fs a ^ " => " ^ #term fs 0 t
+      in if n > 0 then parens s else s
+      end
+    | ppexp fs n (App (t1, t2, _)) =
+      let val s = #term fs 1 t1 ^ " " ^ #term fs 2 t2
+      in if n > 1 then parens s else s
+      end
+    | ppexp fs n (Pair (t1, t2, _)) = parens (#term fs 0 t1 ^ ", " ^ #term fs 0 t2)
+    | ppexp fs n (Proj1 (t, _)) = "fst " ^ #term fs 1 t
+    | ppexp fs n (Proj2 (t, _)) = "snd " ^ #term fs 1 t
+    | ppexp fs _ (IntLit (n, _)) = Int.toString n
+    | ppexp fs n (BoolLit (b, _)) = if b then "true" else "false"
+    | ppexp fs n (Op (b, _)) = raise Fail "Not implemented"
+    | ppexp fs n (Let (ds, t, _)) = "let\n" ^ concat (map (#dec fs) ds) ^ "in " ^ #term fs 0 t ^ "\nend"
+    | ppexp fs n (If (t1, t2, t3, _)) =
+      let val s = "if " ^ #term fs 0 t1 ^ " then " ^ #term fs 0 t2 ^ "else" ^ #term fs 0 t3
+      in if n > 0 then parens s else s
+      end
+    | ppexp fs n (Case (t, alts, _)) = "case " ^ #term fs 0 t ^ " of\n" ^ String.concatWith "| " (map (#alt fs) alts) ^ "end"
+
+  fun ppdec (fs : ('arg, 'targ, 'term, 'typ, 'var) pprecD) (Fun ds) = "fun " ^ String.concatWith "and "
+            (map (fn (v, args, t, _) => #var fs v ^ " " ^ String.concatWith " " (map (#arg fs) args)
+                                   ^ " = " ^ #term fs t) ds)
+    | ppdec fs (PFun ds) = "fun " ^ String.concatWith "and "
+            (map (fn (v, targs, args, ty, t, _) => #var fs v ^ " [" ^ String.concatWith " " (map (#targ fs) targs)
+                 ^ "] " ^ String.concatWith " " (map (fn (v, ty) => parens (#var fs v ^ " : " ^ #typ fs ty)) args)
+                 ^ " : " ^ #typ fs ty ^ " = " ^ #term fs t) ds)
+    | ppdec fs (Data ds) = raise Fail "Not implemented"
+
   end
 
   fun kindOf DPoly = KTyp
@@ -222,6 +260,13 @@ struct
       end
 
   end
+
+  fun ppexp D n (TmF t) = DTFunctors.ppexp {var = fn x => x, arg = fn (v, t) => v, alt = ppalt D,
+                                            term = ppexp D, dec = ppdec D} n t
+    | ppexp D n (THole hr) = "#{ }"
+  and ppdec D (DF d) = DTFunctors.ppdec {var = fn x => x, typ = fn t => ppty (D, t), targ = fn (x, y) => y,
+                                         term = ppexp D 0, arg = fn (v, t) => v} d
+  and ppalt D ((v, vs), t) = v ^ " " ^ String.concatWith " " (map (fn (x, _) => x) vs) ^ " => " ^ ppexp D 0 t ^ "\n"
 
   local
       fun flip (x, (y, z)) = (y, (x, z))

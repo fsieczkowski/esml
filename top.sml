@@ -43,7 +43,7 @@ struct
       open Sum
   in
 
-  exception Err
+  exception Err of string
 
   fun appDec (d as DF (Data ds), D) = List.revAppend (List.map extData ds, D) before print (showDec (D, d))
     | appDec (d, D) = D before print (showDec (D, d))
@@ -52,13 +52,13 @@ struct
                                   Open _ => holes := hl :: !holes
                                 | Closed e => getHolesE e)
     | getHolesE (TmF (Abs (_, e, _))) = getHolesE e
-    | getHolesE (TmF (App (e1, e2, _)))  = (getHolesE e1; getHolesE e2)
-    | getHolesE (TmF (Pair (e1, e2, _))) = (getHolesE e1; getHolesE e2)
+    | getHolesE (TmF (App (e1, e2, _)))  = (getHolesE e2; getHolesE e1)
+    | getHolesE (TmF (Pair (e1, e2, _))) = (getHolesE e2; getHolesE e1)
     | getHolesE (TmF (Proj1 (e, _))) = getHolesE e
     | getHolesE (TmF (Proj2 (e, _))) = getHolesE e
-    | getHolesE (TmF (If (e1, e2, e3, _))) = (getHolesE e1; getHolesE e2; getHolesE e3)
-    | getHolesE (TmF (Let (ds, e, _))) = (app getHolesD ds; getHolesE e)
-    | getHolesE (TmF (Case (e, alts, _))) = (getHolesE e; app (getHolesE o #2) alts)
+    | getHolesE (TmF (If (e1, e2, e3, _))) = (getHolesE e3; getHolesE e2; getHolesE e1)
+    | getHolesE (TmF (Let (ds, e, _))) = (getHolesE e; app getHolesD (rev ds))
+    | getHolesE (TmF (Case (e, alts, _))) = (app (getHolesE o #2) (rev alts); getHolesE e)
     | getHolesE (TmF _) = ()
 
   and getHolesD (DF (Fun ds))  = app (fn (_, _, e, _) => getHolesE e) ds
@@ -74,7 +74,7 @@ struct
 
   fun parseExp s =
       (case Parser.parseExp s of
-           INL err => raise Err before print err
+           INL err => raise Err err
          | INR exp => exp)
 
   fun runExp s = runPExp (parseExp s)
@@ -128,7 +128,7 @@ struct
               (case !hr of
                    Open ((DG, _), ((D, G), t), _) => (s ^ Int.toString n ^ " : " ^ CGAst.ppty (D @ List.map flip DG) t ^ "\n", n + 1)
                  | Closed t => raise Util.Impossible)
-      in (print o #1 o foldl pph ("", 0)) (!holes)
+      in (#1 o foldl pph ("", 0)) (!holes)
       end
 
   fun showHole n =
@@ -140,7 +140,7 @@ struct
           val vc = String.concat (List.map (fn (v, (ts, _)) => v ^ " : " ^ CGAst.pptys (DD, ts) ^ "\n") (rev G))
           val sep = "====================\n"
           val ty = CGAst.ppty DD t
-      in print (tc ^ "\n" ^ vc ^ sep ^ ty ^ "\n")
+      in (tc ^ "\n" ^ vc ^ sep ^ ty ^ "\n")
       end
 
   fun subHoles (sub, []) = []
@@ -157,14 +157,14 @@ struct
       let val (prev, h :: post) = Util.takeDrop (n, !holes)
           val Open (env, ((D, G), t), _) = !h
       in case Parser.parseExp s of
-             INL err => raise Err before print err
+             INL err => raise Err err
            | INR e =>
              (case TypeChecker.refineExpr (env, (D, G), t, e) of
-                  INL errs => raise Err before app (print o showErr) errs
+                  INL errs => raise Err (concat (List.map (showErr) errs))
                 | INR (e', sub) =>
                   (holes := [];
                    getHolesE e';
-                   print ("Refining successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");
+                   (*print ("Refining successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");*)
                    h := Closed e';
                    subHoles (sub, prev); subHoles (sub, post);
                    length (!holes) before holes := prev @ !holes @ post))
@@ -183,24 +183,24 @@ struct
           fun countArrsS (CSPoly (_, t)) = countArrs t
             | countArrsS (CSMono t) = countArrs t
           val e = (case Parser.parseExp s of
-                       INL err => raise Err before print err
+                       INL err => raise Err err
                      | INR e => e)
           val te = ConstrGen.newUVar ()
           val (e', sub) = (case TypeChecker.refineExpr (env, (D, G), te, e) of
-                               INL errs => raise Err before app (print o showErr) errs
+                               INL errs => raise Err (concat (List.map showErr errs))
                              | INR es => es)
           val te' = TypeChecker.substC (sub, te)
           val (tretA, narrA, targsA) = countArrs te'
           val (tretH, narrH, targsH) = countArrs t
           val emptyPos = Pos.pos (Coord.init "-") (Coord.init "-")
-          val _ = if narrA < narrH then raise Err before print "Types don't match" else ()
+          val _ = if narrA < narrH then raise Err "Types don't match" else ()
           val (hargsA, margsA) = Util.takeDrop (narrA - narrH, targsA)
           val cs = CEqc (D @ List.map flip (#1 env), tretH, tretA, emptyPos) ::
                    ListPair.mapEq (fn (tH, tA) => CEqc (D @ List.map flip (#1 env), tH, tA, emptyPos)) (targsH, margsA)
           val residual = CSolver.simplify (List.map (fn x => (x, x)) cs)
           val sub      = CSolver.getSubst ()
           val _ = if null residual then ()
-                  else (raise Err before app (print o showErr) (outL (TypeChecker.reportErrors ([], residual, sub))))
+                  else raise Err (concat (List.map showErr (outL (TypeChecker.reportErrors ([], residual, sub)))))
           fun appNHoles (e, []) = (e, #2 (TAst.annE e))
             | appNHoles (e, t :: ts) =
               let val rt = TypeChecker.subst (sub, t)
@@ -211,10 +211,10 @@ struct
           val (nexp, _) = appNHoles (e', hargsA)
       in (holes := [];
           getHolesE nexp;
-          print ("Application successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");
+          (*print ("Application successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");*)
           h := Closed nexp;
           subHoles (sub, prev); subHoles (sub, post);
-          length (!holes) before holes := prev @ !holes @ post)
+          (length (!holes), nexp) before holes := prev @ !holes @ post)
       end
 
   fun clear () = (holes := []; env := ([], []); ConstrGen.restart ())
@@ -230,7 +230,7 @@ struct
       fun newVar () = let val n = !vcntr in "var" ^ Int.toString n before vcntr := n + 1 end
       fun splitT (TyF (TyApp (t1, t2)), acc) = splitT (t1, t2 :: acc)
         | splitT (TyF (TyVar x), acc) = (x, acc)
-        | splitT _ = raise Err before print "Expression's type is not a datatype"
+        | splitT _ = raise Err "Expression's type is not a datatype"
       fun stripArrs (TyF (TyArr (t1, t2)), acc) = stripArrs (t2, t1 :: acc)
         | stripArrs (t, acc) = (t, acc)
       fun subInst (sub, bds) (t as (TyF (TyVar v))) =
@@ -254,7 +254,7 @@ struct
           val (v, ts) = splitT (t, [])
           val cs = case lookup (List.map flip D @ #1 env, v) of
                        SOME (_, DData (_, cs))  => cs
-                     | _ => raise Err before print "Expression's type is not a datatype"
+                     | _ => raise Err "Expression's type is not a datatype"
           fun doCon c =
               let val ((ft, ats), bs) = (case #1 (valOf (lookup (#2 env, c))) of
                                              SPoly (bs, t) => (stripArrs (t, []), bs)
@@ -274,18 +274,18 @@ struct
       let val (prev, h :: post) = Util.takeDrop (n, !holes)
           val Open (env, ((D, G), t), (pos, rt)) = !h
       in case Parser.parseExp s of
-             INL err => raise Err before print err
+             INL err => raise Err err
            | INR e =>
              (case TypeChecker.refineExpr (env, (D, G), ConstrGen.newUVar (), e) of
-                  INL errs => raise Err before app (print o showErr) errs
+                  INL errs => raise Err (concat (List.map showErr errs))
                 | INR (e', sub) =>
                   let val re = buildCaseE (rt, e', env, (D, G))
                   in (holes := [];
                       getHolesE re;
-                      print ("Refining successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");
+                      (*print ("Refining successful, " ^ Int.toString (length (!holes)) ^ " new holes.\n");*)
                       h := Closed re;
                       subHoles (sub, prev); subHoles (sub, post);
-                      length (!holes) before holes := prev @ !holes @ post)
+                      (length (!holes), re) before holes := prev @ !holes @ post)
                   end)
 
       end

@@ -1,5 +1,6 @@
 ;;; esml-mode.el --- Major mode for editing esml  -*- lexical-binding: t; coding: utf-8 -*-
 
+(require 'smie nil 'noerror)
 
 (defgroup esml ()
   "IDE for esml"
@@ -64,8 +65,10 @@
       (when hole
         (let* ((contents (buffer-substring (car hole) (cdr hole)))
                (command  (concat ":refine " (int-to-string num) " " contents))
-               (result   (inf-esml-get-result command)))
-          (fill-hole hole (concat "(" contents ")")))))))
+               (result   (car (read-from-string (inf-esml-get-result command)))))
+          (pcase result
+            (`(ok ,s) (fill-hole hole (concat "(" contents ")")))
+            (`(error ,err) (handle-errors err))))))))
 
 (defun esml-refine-active-hole ()
   (interactive)
@@ -99,7 +102,7 @@
                (result   (car (read-from-string resultS))))
           (pcase result
             (`(ok ,expr) (fill-hole hole expr))
-            (`(error ,err) (message err))))))))
+            (`(error ,err) (handle-errors err))))))))
 
 (defun esml-case-active-hole ()
   (interactive)
@@ -249,8 +252,100 @@ delimiting markers."
                     (cons new-start new-end)))))
       (setq esml-hole-list (mapcar doit holes)))))
 
+;;; font lock stuff (from sml-mode)
+
+;; The font lock regular expressions.
+
+(defvar sml-outline-regexp
+  ;; `st' and `si' are to match structure and signature.
+  "\\|s[ti]\\|[ \t]*\\(let[ \t]+\\)?\\(fun\\|and\\)\\_>"
+  "Regexp matching a major heading.
+This actually can't work without extending `outline-minor-mode' with the
+notion of \"the end of an outline\".")
+
+(defun esml-syms-re (syms)
+  (concat "\\_<" (regexp-opt syms t) "\\_>"))
+
+(defconst esml-keywords-regexp
+  (esml-syms-re '("abstraction" "abstype" "and" "andalso" "as" "before" "case"
+                  "datatype" "else" "end" "eqtype" "exception" "do" "fn"
+                  "fun" "functor" "handle" "if" "in" "include" "infix"
+                  "infixr" "let" "local" "nonfix" "o" "of" "op" "open" "orelse"
+                  "overload" "raise" "rec" "sharing" "sig" "signature"
+                  "struct" "structure" "then" "type" "val" "where" "while"
+                  "with" "withtype"))
+  "A regexp that matches any and all keywords of SML.")
+
+(eval-and-compile
+  (defconst esml-id-re "\\sw\\(?:\\sw\\|\\s_\\)*"))
+
+(defconst esml-tyvarseq-re
+  (concat "\\(?:\\(?:'+" sml-id-re "\\|(\\(?:[,']\\|" sml-id-re
+          "\\|\\s-\\)+)\\)\\s-+\\)?"))
+
+(defconst esml-font-lock-keywords
+  `((,(concat "\\_<\\(fun\\|and\\)\\s-+" esml-tyvarseq-re
+              "\\(" esml-id-re "\\)\\s-+[^ \t\n=]")
+     (1 font-lock-keyword-face)
+     (2 font-lock-function-name-face))
+    (,(concat "\\_<\\(\\(?:data\\|abs\\|with\\|eq\\)?type\\)\\s-+"
+              esml-tyvarseq-re "\\(" esml-id-re "\\)")
+     (1 font-lock-keyword-face)
+     (2 font-lock-type-def-face))
+    (,(concat "\\_<\\(val\\)\\s-+\\(?:" esml-id-re "\\_>\\s-*\\)?\\("
+              esml-id-re "\\)\\s-*[=:]")
+     (1 font-lock-keyword-face)
+     (2 font-lock-variable-name-face))
+    (,(concat "\\_<\\(structure\\|functor\\|abstraction\\)\\s-+\\("
+              esml-id-re "\\)")
+     (1 font-lock-keyword-face)
+     (2 font-lock-module-def-face))
+    (,(concat "\\_<\\(signature\\)\\s-+\\(" esml-id-re "\\)")
+     (1 font-lock-keyword-face)
+     (2 font-lock-interface-def-face))
+    
+    (,esml-keywords-regexp . font-lock-keyword-face))
+  "Regexps matching standard SML keywords.")
+
+(defface font-lock-type-def-face
+  '((t (:bold t)))
+  "Font Lock mode face used to highlight type definitions."
+  :group 'font-lock-highlighting-faces)
+(defvar font-lock-type-def-face 'font-lock-type-def-face
+  "Face name to use for type definitions.")
+
+(defface font-lock-module-def-face
+  '((t (:bold t)))
+  "Font Lock mode face used to highlight module definitions."
+  :group 'font-lock-highlighting-faces)
+(defvar font-lock-module-def-face 'font-lock-module-def-face
+  "Face name to use for module definitions.")
+
+(defface font-lock-interface-def-face
+  '((t (:bold t)))
+  "Font Lock mode face used to highlight interface definitions."
+  :group 'font-lock-highlighting-faces)
+(defvar font-lock-interface-def-face 'font-lock-interface-def-face
+  "Face name to use for interface definitions.")
+
+(defvar esml-syntax-prop-table
+  (let ((st (make-syntax-table)))
+    (modify-syntax-entry ?\\ "." st)
+    (modify-syntax-entry ?* "." st)
+    st)
+  "Syntax table for text-properties.")
+
+(defconst esml-font-lock-syntactic-keywords
+  `(("^\\s-*\\(\\\\\\)" (1 ',esml-syntax-prop-table))))
+
+(defconst esml-font-lock-defaults
+  '(esml-font-lock-keywords nil nil nil nil
+    (font-lock-syntactic-keywords . esml-font-lock-syntactic-keywords)))
+
+
 ;;;###autoload
-(define-derived-mode esml-mode prog-mode "ESML")
+(define-derived-mode esml-mode prog-mode "ESML"
+  (set (make-local-variable 'font-lock-defaults) esml-font-lock-defaults))
 
 ;;; inferior esml stuff
 

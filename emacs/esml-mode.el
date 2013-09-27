@@ -1,4 +1,5 @@
 ;;; esml-mode.el --- Major mode for editing esml  -*- lexical-binding: t; coding: utf-8 -*-
+;; Version: 0.1
 
 (require 'smie nil 'noerror)
 
@@ -451,3 +452,5 @@ The process PROC should be associated to a comint buffer."
 (add-hook 'esml-prog-mode-hook 'esml-prog--initialize)
 
 (provide 'esml-mode)
+
+;;; esml-mode.el ends here
